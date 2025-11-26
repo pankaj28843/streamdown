@@ -379,3 +379,81 @@
 
 - [x] 33. Final checkpoint - Ensure all netrc tests pass
   - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 34. Implement responsive terminal width detection
+  - Add get_terminal_width() method to ProgressDisplay using shutil.get_terminal_size()
+  - Add is_narrow_terminal() method that returns True for width < 80
+  - Store terminal width as instance variable, update on each render
+  - _Requirements: 16.1_
+
+- [x] 34.1 Write property test for terminal width detection
+  - **Property 36: Terminal width detection**
+  - **Validates: Requirements 16.1**
+
+- [x] 35. Implement filename truncation for narrow terminals
+  - Add format_filename() method that truncates long filenames
+  - Preserve file extension (last 15 chars including extension)
+  - Use middle truncation with ellipsis: "start...end"
+  - Ensure truncated name fits within allocated space (minimum 20 chars)
+  - _Requirements: 16.2_
+
+- [x] 35.1 Write property test for filename truncation
+  - **Property 37: Filename truncation preserves extension**
+  - **Validates: Requirements 16.2**
+
+- [x] 36. Implement adaptive progress bar layout
+  - Modify progress bar rendering to detect narrow terminals
+  - On narrow terminals: reduce bar width to 10-20 chars (proportional to terminal width)
+  - On wide terminals: use 40-60 char bar
+  - Ensure minimum readable bar width of 10 chars
+  - _Requirements: 16.5_
+
+- [x] 36.1 Write property test for progress bar scaling
+  - **Property 40: Progress bar scales with terminal width**
+  - **Validates: Requirements 16.5**
+
+- [x] 37. Implement information prioritization for narrow terminals
+  - Create compact display format for narrow terminals
+  - Essential info (always show): truncated filename, percentage, status
+  - Important info (show if space): downloaded amount, progress bar
+  - Optional info (omit on narrow): total size, ETA, detailed speed
+  - Format sizes compactly: "1.7GB" instead of "1.7 GB / 68.2 GB"
+  - _Requirements: 16.3_
+
+- [x] 37.1 Write property test for information prioritization
+  - **Property 38: Essential information prioritized on narrow terminals**
+  - **Validates: Requirements 16.3**
+
+- [x] 38. Implement URL display handling for narrow terminals
+  - Omit URL from progress line on narrow terminals
+  - Show URL only in initial "Starting download" log message
+  - Ensure URL display doesn't cause wrapping
+  - _Requirements: 16.4_
+
+- [x] 38.1 Write property test for URL display
+  - **Property 39: URL display prevents wrapping**
+  - **Validates: Requirements 16.4**
+
+- [x] 39. Add integration tests for responsive display
+  - Test display rendering at various terminal widths (40, 60, 80, 120 cols)
+  - Verify filename truncation preserves extensions
+  - Verify progress bar scales appropriately
+  - Verify essential information is always visible
+  - Verify no line wrapping occurs on narrow terminals
+  - _Requirements: 16.1, 16.2, 16.3, 16.4, 16.5_
+
+- [x] 40. Update CLI tests for narrow terminal scenarios
+  - Add tests for terminal width detection
+  - Test filename truncation with various lengths
+  - Test progress display on simulated narrow terminals
+  - Verify compact size formatting
+  - _Requirements: 16.1, 16.2, 16.3_
+
+- [x] 41. Update README with mobile terminal support
+  - Document that the CLI adapts to narrow terminals
+  - Mention support for mobile terminal emulators
+  - Show example of narrow vs wide terminal output
+  - _Requirements: 16.1_
+
+- [x] 42. Final checkpoint - Ensure all responsive display tests pass
+  - Ensure all tests pass, ask the user if questions arise.

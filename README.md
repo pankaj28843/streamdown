@@ -8,10 +8,55 @@ A modern asyncio-based HTTP(S) downloader with intelligent multi-connection down
 - **Smart chunk planning** - Prioritize early file segments for streaming video playback
 - **Robust resume capabilities** - Automatically resume interrupted downloads with metadata validation
 - **Rich terminal interface** - Real-time progress bars with speed and ETA
+- **Responsive display** - Automatically adapts to narrow terminals and mobile devices
 - **Pure Python implementation** - No C extensions required, works with uv and modern Python tooling
 - **Configurable retry logic** - Automatic retry with exponential backoff for transient failures
 - **Multiple download modes** - Queue and download multiple files concurrently
 - **Streaming modes** - Choose between default, inorder, or geometric chunk selection strategies
+
+## Mobile and Narrow Terminal Support
+
+Streamdown automatically detects your terminal width and adapts the display for optimal readability on narrow screens, including mobile terminal emulators like Termux, iSH, or SSH sessions on phones.
+
+### Adaptive Display Behavior
+
+The progress display intelligently adjusts based on terminal width:
+
+**Wide Terminal (≥80 columns):**
+```
+Writing.With.Fire.2021.1080p.WEBRip.x264.AAC-[YTS.MX].mp4 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 99.8% • 1.7/68.2 GB • 0:00 • downloading
+```
+
+**Narrow Terminal (<80 columns):**
+```
+Writing...YTS.MX].mp4 ━━━━━━━━━━ 99.8% • 1.7GB • downloading
+```
+
+### What Changes on Narrow Terminals
+
+When Streamdown detects a terminal width less than 80 columns, it automatically:
+
+- **Truncates long filenames** while preserving file extensions (e.g., `Writing...YTS.MX].mp4`)
+- **Scales progress bar width** proportionally to available space (minimum 10 characters)
+- **Prioritizes essential information**: filename, percentage, and status always visible
+- **Compacts size display**: Shows `1.7GB` instead of `1.7 GB / 68.2 GB`
+- **Omits URLs** from progress lines (shown only in initial log message)
+- **Removes optional details**: ETA and detailed speed metrics hidden when space is limited
+
+### Mobile Terminal Emulators
+
+Streamdown works great on mobile devices with terminal emulators:
+
+- **Termux** (Android) - Full support with automatic width detection
+- **iSH** (iOS) - Adapts to small screen sizes
+- **SSH clients** (iOS/Android) - Responsive display for remote sessions
+- **Blink Shell** (iOS) - Works seamlessly with adaptive layout
+
+Simply run Streamdown as you would on desktop - the display automatically adapts to your screen size.
+
+### Testing Terminal Width
+
+You can test the responsive display by resizing your terminal window. Streamdown detects the width on each update and adjusts the layout in real-time.
 
 ## Requirements
 
@@ -420,6 +465,17 @@ streamdown https://downloads.example.com/protected/file.zip
 - Check if you're using `-q` or `--quiet` flag
 - Verify your terminal supports rich output
 - Try without piping output to another command
+
+### Display Wrapping or Garbled on Mobile
+
+**Problem**: Progress display wraps or looks garbled on mobile terminal
+
+**Solutions**:
+- Streamdown automatically detects terminal width and adapts the display
+- If detection fails, try resizing your terminal window
+- Ensure your terminal emulator reports width correctly (most modern ones do)
+- On very narrow terminals (<40 columns), some wrapping may still occur
+- Use `-q` (quiet mode) for minimal output on extremely narrow screens
 
 ## Exit Codes
 

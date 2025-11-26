@@ -1048,3 +1048,427 @@ class TestCustomOptions:
         options = call_args[0][1]
 
         assert options.netrc_path == Path("/custom/netrc")
+
+
+class TestNarrowTerminalScenarios:
+    """
+    Test CLI with narrow terminal scenarios.
+
+    Requirements: 16.1, 16.2, 16.3
+    """
+
+    def test_terminal_width_detection(self):
+        """
+        Test terminal width detection.
+
+        Requirement 16.1: WHEN the terminal width is less than 80 columns THEN
+        Streamdown SHALL detect the narrow width and adjust the display layout
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+            # Create a mock terminal size object
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+
+            # Test narrow terminal (60 columns)
+            mock_get_size.return_value = MockTerminalSize(60)
+            display = ProgressDisplay(quiet=True)
+            
+            assert display.get_terminal_width() == 60
+            assert display.is_narrow_terminal() is True
+
+            # Test wide terminal (120 columns)
+            mock_get_size.return_value = MockTerminalSize(120)
+            display = ProgressDisplay(quiet=True)
+            
+            assert display.get_terminal_width() == 120
+            assert display.is_narrow_terminal() is False
+
+            # Test boundary at 80 columns
+            mock_get_size.return_value = MockTerminalSize(80)
+            display = ProgressDisplay(quiet=True)
+            
+            assert display.get_terminal_width() == 80
+            assert display.is_narrow_terminal() is False
+
+            # Test just below boundary (79 columns)
+            mock_get_size.return_value = MockTerminalSize(79)
+            display = ProgressDisplay(quiet=True)
+            
+            assert display.get_terminal_width() == 79
+            assert display.is_narrow_terminal() is True
+
+    def test_filename_truncation_short_names(self):
+        """
+        Test filename truncation with short filenames.
+
+        Requirement 16.2: WHEN displaying filenames on narrow terminals THEN
+        Streamdown SHALL truncate long filenames to fit within available space
+        while preserving file extension
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        display = ProgressDisplay(quiet=True)
+
+        # Short filenames should not be truncated
+        result = display.format_filename("file.txt", 50)
+        assert result == "file.txt"
+
+        result = display.format_filename("document.pdf", 50)
+        assert result == "document.pdf"
+
+        result = display.format_filename("video.mp4", 50)
+        assert result == "video.mp4"
+
+    def test_filename_truncation_long_names(self):
+        """
+        Test filename truncation with long filenames.
+
+        Requirement 16.2: WHEN displaying filenames on narrow terminals THEN
+        Streamdown SHALL truncate long filenames to fit within available space
+        while preserving file extension
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        display = ProgressDisplay(quiet=True)
+
+        # Long filename should be truncated with extension preserved
+        long_name = "Writing.With.Fire.2021.1080p.WEBRip.x264.AAC-[YTS.MX].mp4"
+        result = display.format_filename(long_name, 30)
+        
+        assert len(result) <= 30
+        assert "..." in result
+        assert result.endswith("YTS.MX].mp4")  # Last 15 chars preserved
+        assert result.startswith("Writing")  # Start preserved
+
+    def test_filename_truncation_various_lengths(self):
+        """
+        Test filename truncation with various max widths.
+
+        Requirement 16.2: WHEN displaying filenames on narrow terminals THEN
+        Streamdown SHALL truncate long filenames to fit within available space
+        while preserving file extension
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        display = ProgressDisplay(quiet=True)
+
+        long_filename = "Very.Long.Filename.With.Many.Segments.And.Extension.mp4"
+
+        # Test various max widths
+        for max_width in [20, 30, 40, 50, 60]:
+            result = display.format_filename(long_filename, max_width)
+            
+            # Result should not exceed max_width (or minimum of 20)
+            effective_max = max(max_width, 20)
+            assert len(result) <= effective_max, (
+                f"Filename '{result}' (length {len(result)}) exceeds max_width {effective_max}"
+            )
+            
+            # If truncation occurred, should have ellipsis
+            if len(long_filename) > max_width:
+                assert "..." in result
+
+    def test_filename_truncation_preserves_extension(self):
+        """
+        Test that filename truncation preserves file extensions.
+
+        Requirement 16.2: WHEN displaying filenames on narrow terminals THEN
+        Streamdown SHALL truncate long filenames to fit within available space
+        while preserving file extension
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        display = ProgressDisplay(quiet=True)
+
+        # Test various file extensions
+        test_cases = [
+            ("a" * 100 + ".txt", 30, ".txt"),
+            ("b" * 100 + ".mp4", 30, ".mp4"),
+            ("c" * 100 + ".zip", 30, ".zip"),
+            ("d" * 100 + ".tar.gz", 30, ".tar.gz"),
+            ("e" * 100 + ".mkv", 30, ".mkv"),
+        ]
+
+        for filename, max_width, expected_ext in test_cases:
+            result = display.format_filename(filename, max_width)
+            
+            # Should preserve last 15 characters (which includes extension)
+            assert result.endswith(filename[-15:]), (
+                f"Expected '{result}' to end with '{filename[-15:]}'"
+            )
+
+    def test_filename_truncation_minimum_width(self):
+        """
+        Test that filename truncation enforces minimum width.
+
+        Requirement 16.2: Minimum display of 20 characters
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        display = ProgressDisplay(quiet=True)
+
+        long_filename = "a" * 100 + ".txt"
+
+        # Even with very small max_width, should enforce minimum of 20
+        result = display.format_filename(long_filename, 10)
+        assert len(result) == 20
+
+        result = display.format_filename(long_filename, 5)
+        assert len(result) == 20
+
+        result = display.format_filename(long_filename, 15)
+        assert len(result) == 20
+
+    def test_progress_display_on_narrow_terminal(self):
+        """
+        Test progress display adapts to narrow terminals.
+
+        Requirement 16.1: WHEN the terminal width is less than 80 columns THEN
+        Streamdown SHALL detect the narrow width and adjust the display layout
+
+        Requirement 16.3: WHEN displaying progress information on narrow terminals
+        THEN Streamdown SHALL prioritize essential information and omit or
+        abbreviate less critical details
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+            # Create a mock terminal size object
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+
+            # Test narrow terminal (60 columns)
+            mock_get_size.return_value = MockTerminalSize(60)
+            
+            display = ProgressDisplay(quiet=False)
+            
+            # Verify narrow terminal is detected
+            assert display.is_narrow_terminal() is True
+            
+            # Verify bar width is appropriate for narrow terminal (10-20 chars)
+            bar_width = display.calculate_bar_width()
+            assert 10 <= bar_width <= 20, (
+                f"Bar width {bar_width} should be between 10-20 for narrow terminal"
+            )
+
+    def test_progress_display_on_wide_terminal(self):
+        """
+        Test progress display on wide terminals.
+
+        Requirement 16.1: Wide terminals (≥80 cols) should use full display
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+            # Create a mock terminal size object
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+
+            # Test wide terminal (120 columns)
+            mock_get_size.return_value = MockTerminalSize(120)
+            
+            display = ProgressDisplay(quiet=False)
+            
+            # Verify wide terminal is detected
+            assert display.is_narrow_terminal() is False
+            
+            # Verify bar width is appropriate for wide terminal (40-60 chars)
+            bar_width = display.calculate_bar_width()
+            assert 40 <= bar_width <= 60, (
+                f"Bar width {bar_width} should be between 40-60 for wide terminal"
+            )
+
+    def test_compact_size_formatting(self):
+        """
+        Test compact size formatting for narrow terminals.
+
+        Requirement 16.3: WHEN displaying progress information on narrow terminals
+        THEN Streamdown SHALL prioritize essential information and omit or
+        abbreviate less critical details
+
+        Compact format should be: "1.7GB" instead of "1.7 GB / 68.2 GB"
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        display = ProgressDisplay(quiet=True)
+
+        # Test bytes
+        assert display.format_size_compact(0) == "0B"
+        assert display.format_size_compact(512) == "512B"
+        assert display.format_size_compact(1023) == "1023B"
+
+        # Test kilobytes
+        assert display.format_size_compact(1024) == "1.0KB"
+        assert display.format_size_compact(5 * 1024) == "5.0KB"
+        assert display.format_size_compact(10 * 1024) == "10KB"
+        assert display.format_size_compact(100 * 1024) == "100KB"
+
+        # Test megabytes
+        assert display.format_size_compact(1024 * 1024) == "1.0MB"
+        assert display.format_size_compact(5 * 1024 * 1024) == "5.0MB"
+        assert display.format_size_compact(234 * 1024 * 1024) == "234MB"
+
+        # Test gigabytes
+        assert display.format_size_compact(1024 * 1024 * 1024) == "1.0GB"
+        assert display.format_size_compact(int(1.7 * 1024 * 1024 * 1024)) == "1.7GB"
+        assert display.format_size_compact(68 * 1024 * 1024 * 1024) == "68GB"
+
+        # Test terabytes
+        assert display.format_size_compact(1024 * 1024 * 1024 * 1024) == "1.0TB"
+
+    def test_compact_size_no_spaces(self):
+        """
+        Test that compact size format contains no spaces.
+
+        Requirement 16.3: Compact format should be "1.7GB" not "1.7 GB"
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        display = ProgressDisplay(quiet=True)
+
+        # Test various sizes to ensure no spaces
+        test_sizes = [
+            0,
+            512,
+            1024,
+            1024 * 1024,
+            1024 * 1024 * 1024,
+            int(1.7 * 1024 * 1024 * 1024),
+            68 * 1024 * 1024 * 1024,
+        ]
+
+        for size in test_sizes:
+            result = display.format_size_compact(size)
+            assert " " not in result, (
+                f"Compact size '{result}' should not contain spaces"
+            )
+
+    def test_terminal_width_at_various_sizes(self):
+        """
+        Test terminal width detection at various sizes.
+
+        Requirement 16.1: WHEN the terminal width is less than 80 columns THEN
+        Streamdown SHALL detect the narrow width and adjust the display layout
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+            # Create a mock terminal size object
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+
+            # Test various terminal widths
+            test_widths = [40, 60, 79, 80, 100, 120, 160, 200]
+
+            for width in test_widths:
+                mock_get_size.return_value = MockTerminalSize(width)
+                display = ProgressDisplay(quiet=True)
+                
+                detected_width = display.get_terminal_width()
+                assert detected_width == width, (
+                    f"Expected width {width}, got {detected_width}"
+                )
+                
+                # Verify narrow detection
+                is_narrow = display.is_narrow_terminal()
+                expected_narrow = width < 80
+                assert is_narrow == expected_narrow, (
+                    f"For width {width}, expected narrow={expected_narrow}, got {is_narrow}"
+                )
+
+    def test_bar_width_scaling(self):
+        """
+        Test that progress bar width scales with terminal width.
+
+        Requirement 16.5: WHEN the progress bar is displayed on narrow terminals
+        THEN Streamdown SHALL scale the bar width proportionally to terminal width
+        while maintaining readability
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+            # Create a mock terminal size object
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+
+            # Test bar width at various terminal widths
+            test_cases = [
+                (40, 10),   # Very narrow -> minimum bar width
+                (60, 15),   # Narrow -> scaled bar width
+                (79, 19),   # Just below threshold -> max narrow bar
+                (80, 40),   # At threshold -> min wide bar
+                (120, 50),  # Wide -> scaled bar width
+                (200, 60),  # Very wide -> max bar width
+            ]
+
+            for terminal_width, expected_bar_width in test_cases:
+                mock_get_size.return_value = MockTerminalSize(terminal_width)
+                display = ProgressDisplay(quiet=True)
+                
+                bar_width = display.calculate_bar_width()
+                assert bar_width == expected_bar_width, (
+                    f"For terminal width {terminal_width}, expected bar width "
+                    f"{expected_bar_width}, got {bar_width}"
+                )
+
+    def test_bar_width_minimum_enforced(self):
+        """
+        Test that minimum bar width of 10 characters is enforced.
+
+        Requirement 16.5: Minimum readable bar width of 10 characters
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+            # Create a mock terminal size object
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+
+            # Test very narrow terminals
+            for width in [20, 30, 35, 40]:
+                mock_get_size.return_value = MockTerminalSize(width)
+                display = ProgressDisplay(quiet=True)
+                
+                bar_width = display.calculate_bar_width()
+                assert bar_width >= 10, (
+                    f"Bar width {bar_width} is below minimum of 10 for terminal width {width}"
+                )
+
+    def test_bar_width_maximum_enforced(self):
+        """
+        Test that maximum bar width of 60 characters is enforced.
+
+        Requirement 16.5: Maximum bar width of 60 characters
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+            # Create a mock terminal size object
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+
+            # Test very wide terminals
+            for width in [200, 250, 300]:
+                mock_get_size.return_value = MockTerminalSize(width)
+                display = ProgressDisplay(quiet=True)
+                
+                bar_width = display.calculate_bar_width()
+                assert bar_width <= 60, (
+                    f"Bar width {bar_width} exceeds maximum of 60 for terminal width {width}"
+                )

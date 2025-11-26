@@ -332,6 +332,86 @@ class PartFileWriter:
 
 Uses aiofiles for async I/O with buffering.
 
+#### Progress Display (CLI Layer)
+
+**ProgressDisplay**
+```python
+class ProgressDisplay:
+    def __init__(self, quiet: bool = False): ...
+    
+    def create_task(self, download_id: DownloadId, filename: str) -> TaskID: ...
+    
+    def update_progress(
+        self,
+        task_id: TaskID,
+        completed: int,
+        total: int,
+        speed: float,
+        status: str
+    ) -> None: ...
+    
+    def format_filename(self, filename: str, max_width: int) -> str: ...
+    
+    def format_url(self, url: str, max_width: int) -> str: ...
+    
+    def get_terminal_width(self) -> int: ...
+    
+    def is_narrow_terminal(self) -> bool: ...
+```
+
+**Responsive Display Strategy:**
+
+The progress display adapts to terminal width using the following approach:
+
+1. **Width Detection**: Use `shutil.get_terminal_size()` to detect current terminal width
+2. **Narrow Terminal Threshold**: Terminals < 80 columns are considered narrow
+3. **Adaptive Layout**:
+   - **Wide terminals (≥80 cols)**: Full display with filename, URL, progress bar, percentage, speed, ETA, downloaded/total
+   - **Narrow terminals (<80 cols)**: Compact display prioritizing essential information
+
+**Narrow Terminal Layout:**
+
+```
+# Wide terminal (≥80 cols):
+Writing.With.Fire.2021.1080p.WEBRip.x264.AAC-[YTS.MX].mp4 ━━━━━━ 99.8% • 1.7/68.2 GB • 0:00 • downloading
+
+# Narrow terminal (<80 cols):
+Writing...YTS.MX].mp4 ━━ 99.8% • 1.7GB • downloading
+```
+
+**Truncation Rules:**
+
+1. **Filename Truncation**:
+   - Preserve file extension (last 15 chars including extension)
+   - Truncate from middle: `start...end`
+   - Minimum display: 20 chars
+   - Example: `Writing.With.Fire.2021.1080p.WEBRip.x264.AAC-[YTS.MX].mp4` → `Writing...YTS.MX].mp4`
+
+2. **URL Handling**:
+   - On narrow terminals: Omit URL entirely from progress line
+   - Show URL only in initial "Starting download" log message
+
+3. **Progress Bar Scaling**:
+   - Wide terminal: 40-60 char bar
+   - Narrow terminal: 10-20 char bar (proportional to width)
+   - Minimum readable bar: 10 chars
+
+4. **Information Priority** (narrow terminals):
+   - **Essential** (always show): Filename (truncated), percentage, status
+   - **Important** (show if space): Downloaded amount, progress bar
+   - **Optional** (omit if needed): Total size, ETA, speed details
+
+5. **Size Formatting**:
+   - Wide: `1.7 GB / 68.2 GB`
+   - Narrow: `1.7GB` (omit total, no spaces)
+
+**Implementation Details:**
+
+- Use `rich.console.Console.width` to get terminal width
+- Recalculate layout on each update (handles terminal resize)
+- Use `rich.text.Text` with `overflow="ellipsis"` for truncation
+- Test with terminal widths: 40, 60, 80, 120, 160 columns
+
 ## Data Models
 
 ### Metadata File Format
@@ -793,6 +873,52 @@ Property 34: Netrc disabled with no-netrc flag
 Property 35: Custom netrc path respected
 *For any* download with netrc-path specified, credentials must be read from the specified path instead of the default ~/.netrc location.
 **Validates: Requirements 15.5**
+
+### Acceptance Criteria Testing Prework (Requirement 16)
+
+16.1 WHEN the terminal width is less than 80 columns THEN Streamdown SHALL detect the narrow width and adjust the display layout
+Thoughts: This is about detecting terminal width and adapting behavior. We can test that the system detects width correctly and triggers adaptive behavior.
+Testable: yes - property
+
+16.2 WHEN displaying filenames on narrow terminals THEN Streamdown SHALL truncate long filenames to fit within available space while preserving file extension
+Thoughts: This is about filename truncation logic for all filenames on narrow terminals. We can test that truncated names fit within bounds and preserve extensions.
+Testable: yes - property
+
+16.3 WHEN displaying progress information on narrow terminals THEN Streamdown SHALL prioritize essential information and omit or abbreviate less critical details
+Thoughts: This is about information prioritization. We can verify that essential info is present and fits within width constraints.
+Testable: yes - property
+
+16.4 WHEN displaying URLs on narrow terminals THEN Streamdown SHALL truncate or omit URLs to prevent wrapping
+Thoughts: This is about URL display handling. We can verify URLs don't cause line wrapping.
+Testable: yes - property
+
+16.5 WHEN the progress bar is displayed on narrow terminals THEN Streamdown SHALL scale the bar width proportionally to terminal width while maintaining readability
+Thoughts: This is about progress bar sizing. We can verify the bar scales appropriately and remains readable.
+Testable: yes - property
+
+### Property Reflection (Requirement 16)
+
+All properties are distinct and test different aspects of responsive terminal display. No redundancy identified.
+
+Property 36: Terminal width detection
+*For any* terminal environment, the system must correctly detect the terminal width and apply narrow-screen adaptations when width is less than 80 columns.
+**Validates: Requirements 16.1**
+
+Property 37: Filename truncation preserves extension
+*For any* filename displayed on a narrow terminal, if truncation is needed, the file extension must be preserved and the truncated name must fit within the allocated space.
+**Validates: Requirements 16.2**
+
+Property 38: Essential information prioritized on narrow terminals
+*For any* progress display on a narrow terminal, essential information (filename, percentage, status) must be visible while less critical information may be omitted.
+**Validates: Requirements 16.3**
+
+Property 39: URL display prevents wrapping
+*For any* URL displayed on a narrow terminal, the URL must be truncated or omitted to prevent line wrapping beyond the terminal width.
+**Validates: Requirements 16.4**
+
+Property 40: Progress bar scales with terminal width
+*For any* progress bar on a narrow terminal, the bar width must scale proportionally to available space while maintaining a minimum readable width.
+**Validates: Requirements 16.5**
 
 ## Error Handling
 

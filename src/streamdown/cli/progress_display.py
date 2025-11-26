@@ -1,6 +1,7 @@
 """Progress display using rich for terminal UI."""
 
 import asyncio
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,26 +62,51 @@ class ProgressDisplay:
         self._lock: asyncio.Lock | None = None  # Created lazily when needed
         self._total_bytes_downloaded = 0
         self._start_time: float | None = None
+        self._terminal_width: int = 80  # Default width, updated on each render
 
     def __enter__(self):
         """Enter context manager."""
         if not self.quiet:
             # Requirement 6.1: Display progress bar with filename, percentage, speed, ETA
-            self.progress = Progress(
-                TextColumn("[bold blue]{task.fields[filename]}", justify="left"),
-                BarColumn(bar_width=None),
-                "[progress.percentage]{task.percentage:>3.1f}%",
-                "•",
-                DownloadColumn(),
-                "•",
-                TransferSpeedColumn(),
-                "•",
-                TimeRemainingColumn(),
-                "•",
-                TextColumn("[bold]{task.fields[status]}"),
-                console=self.console,
-                expand=True,
-            )
+            # Requirement 16.5: Scale bar width based on terminal width
+            # Requirement 16.3: Prioritize essential information on narrow terminals
+            bar_width = self.calculate_bar_width()
+            is_narrow = self.is_narrow_terminal()
+            terminal_width = self.get_terminal_width()
+            
+            if is_narrow:
+                # Narrow terminal: Essential info only
+                # Essential: filename (truncated), percentage, status
+                # Important: downloaded amount, progress bar
+                # Omit: total size, ETA, detailed speed
+                self.progress = Progress(
+                    TextColumn("[bold blue]{task.fields[filename]}", justify="left"),
+                    BarColumn(bar_width=bar_width),
+                    "[progress.percentage]{task.percentage:>3.1f}%",
+                    "•",
+                    TextColumn("{task.fields[compact_size]}"),
+                    "•",
+                    TextColumn("[bold]{task.fields[status]}"),
+                    console=self.console,
+                    expand=False,  # Don't expand to prevent wrapping
+                )
+            else:
+                # Wide terminal: Full display
+                self.progress = Progress(
+                    TextColumn("[bold blue]{task.fields[filename]}", justify="left"),
+                    BarColumn(bar_width=bar_width),
+                    "[progress.percentage]{task.percentage:>3.1f}%",
+                    "•",
+                    DownloadColumn(),
+                    "•",
+                    TransferSpeedColumn(),
+                    "•",
+                    TimeRemainingColumn(),
+                    "•",
+                    TextColumn("[bold]{task.fields[status]}"),
+                    console=self.console,
+                    expand=False,  # Don't expand to prevent wrapping
+                )
             self.progress.__enter__()
 
         # Use time.time() instead of event loop time since loop may not exist yet
@@ -120,17 +146,49 @@ class ProgressDisplay:
             return
 
         # Requirement 6.3: Show status indicators
+        # Requirement 16.3: Include compact size for narrow terminals
+        # Requirement 16.2: Truncate long filenames for narrow terminals
+        compact_size = self.format_size_compact(0)  # Start with 0 bytes downloaded
+        
+        # Truncate filename if on narrow terminal
+        display_filename = filename
+        terminal_width = self.get_terminal_width()
+        
+        if self.is_narrow_terminal():
+            # On narrow terminals, allocate reasonable space for filename
+            # Calculate based on actual space used:
+            # - bar_width + 1 space before bar
+            # - " 100.0%" = 7 chars
+            # - " • " = 3 chars (separator)
+            # - "64GB" = ~6 chars (size, varies)
+            # - " • " = 3 chars (separator)
+            # - "complete" = ~12 chars (status, varies)
+            # Total other elements: bar + 1 + 7 + 3 + 6 + 3 + 12 = bar + 32
+            bar_width = self.calculate_bar_width()
+            other_elements_width = bar_width + 1 + 32
+            max_filename_width = max(20, terminal_width - other_elements_width - 2)  # -2 for safety margin
+            display_filename = self.format_filename(filename, max_filename_width)
+        else:
+            # On wide terminals, also truncate but with more generous limit
+            # Calculate based on: bar_width + percentage + download + speed + time + status + separators
+            bar_width = self.calculate_bar_width()
+            other_elements_width = bar_width + 70  # Approximate for all other columns
+            max_filename_width = max(40, terminal_width - other_elements_width)
+            if len(filename) > max_filename_width:
+                display_filename = self.format_filename(filename, max_filename_width)
+        
         task_id = self.progress.add_task(
-            description=filename,
+            description=display_filename,
             total=total_bytes,
-            filename=filename,
+            filename=display_filename,
             status="HEAD",
+            compact_size=compact_size,
         )
 
         import time
         self.downloads[url] = DownloadTracker(
             url=url,
-            filename=filename,
+            filename=filename,  # Store original filename
             task_id=task_id,
             status=DownloadStatus.PENDING,
             total_bytes=total_bytes,
@@ -192,17 +250,22 @@ class ProgressDisplay:
 
         tracker.downloaded_bytes = downloaded_bytes
 
+        # Requirement 16.3: Update compact size for narrow terminals
+        compact_size = self.format_size_compact(downloaded_bytes)
+
         if total_bytes is not None and total_bytes != tracker.total_bytes:
             tracker.total_bytes = total_bytes
             self.progress.update(
                 tracker.task_id,
                 total=total_bytes,
+                compact_size=compact_size,
             )
-
-        self.progress.update(
-            tracker.task_id,
-            completed=downloaded_bytes,
-        )
+        else:
+            self.progress.update(
+                tracker.task_id,
+                completed=downloaded_bytes,
+                compact_size=compact_size,
+            )
 
     def mark_complete(self, url: str, final_path: Path) -> None:
         """
@@ -334,3 +397,217 @@ class ProgressDisplay:
                 self.console.print(f"  [red]✗[/red] {download.url}")
                 if download.error_message:
                     self.console.print(f"    Error: {download.error_message}")
+
+    def get_terminal_width(self) -> int:
+        """
+        Get the current terminal width.
+
+        Uses shutil.get_terminal_size() to detect terminal dimensions.
+        Updates the internal terminal width cache.
+
+        Requirement 16.1: Detect terminal width for responsive display
+
+        Returns:
+            Terminal width in columns
+        """
+        try:
+            size = shutil.get_terminal_size()
+            self._terminal_width = size.columns
+            return size.columns
+        except (AttributeError, ValueError, OSError):
+            # Fallback to default if terminal size cannot be determined
+            return self._terminal_width
+
+    def is_narrow_terminal(self) -> bool:
+        """
+        Check if the terminal is narrow (< 80 columns).
+
+        Requirement 16.1: Terminals < 80 columns are considered narrow
+
+        Returns:
+            True if terminal width is less than 80 columns, False otherwise
+        """
+        width = self.get_terminal_width()
+        return width < 80
+
+    def calculate_bar_width(self) -> int:
+        """
+        Calculate appropriate progress bar width based on terminal width.
+
+        Implements adaptive bar sizing:
+        - Wide terminals (≥80 cols): 40-60 char bar
+        - Narrow terminals (<80 cols): 10-20 char bar (proportional to width)
+        - Minimum readable bar: 10 chars
+
+        Requirement 16.5: Progress bar scales with terminal width
+
+        Returns:
+            Progress bar width in characters
+        """
+        terminal_width = self.get_terminal_width()
+        
+        if terminal_width >= 80:
+            # Wide terminal: use 40-60 char bar
+            # Scale proportionally: 80 cols -> 40 chars, 160+ cols -> 60 chars
+            bar_width = 40 + int((terminal_width - 80) * 0.25)
+            return min(bar_width, 60)
+        else:
+            # Narrow terminal: use 10-20 char bar proportional to width
+            # Scale: 40 cols -> 10 chars, 80 cols -> 20 chars
+            # Formula: 10 + (width - 40) * (10 / 40)
+            bar_width = 10 + int((terminal_width - 40) * 0.25)
+            return max(bar_width, 10)  # Ensure minimum of 10 chars
+
+    def format_filename(self, filename: str, max_width: int) -> str:
+        """
+        Format filename for display, truncating if necessary to fit within max_width.
+
+        Uses middle truncation with ellipsis to preserve both the start of the filename
+        and the file extension. The extension (last 15 chars including the dot) is
+        always preserved when truncation is needed.
+
+        Requirement 16.2: Truncate long filenames while preserving file extension
+
+        Args:
+            filename: The filename to format
+            max_width: Maximum width in characters for the formatted filename
+
+        Returns:
+            Formatted filename that fits within max_width characters
+
+        Examples:
+            >>> display = ProgressDisplay()
+            >>> display.format_filename("short.txt", 50)
+            'short.txt'
+            >>> display.format_filename("Writing.With.Fire.2021.1080p.WEBRip.x264.AAC-[YTS.MX].mp4", 30)
+            'Writing...YTS.MX].mp4'
+        """
+        # Ensure minimum width of 20 characters
+        if max_width < 20:
+            max_width = 20
+
+        # If filename fits within max_width, return as-is
+        if len(filename) <= max_width:
+            return filename
+
+        # Preserve last 15 characters (including extension)
+        extension_length = 15
+        ellipsis = "..."
+
+        # Calculate space available for the start portion
+        # max_width = start_length + len(ellipsis) + extension_length
+        start_length = max_width - len(ellipsis) - extension_length
+
+        # Ensure we have at least some characters for the start
+        if start_length < 1:
+            # If max_width is too small, just truncate from the end
+            return filename[:max_width]
+
+        # Extract start and end portions
+        start = filename[:start_length]
+        end = filename[-extension_length:]
+
+        # Combine with ellipsis
+        return f"{start}{ellipsis}{end}"
+
+    def format_size_compact(self, bytes_value: int) -> str:
+        """
+        Format byte size in compact format for narrow terminals.
+
+        Formats sizes without spaces and with minimal precision:
+        - "1.7GB" instead of "1.7 GB / 68.2 GB"
+        - Uses B, KB, MB, GB, TB units
+        - One decimal place for values >= 10, two for values < 10
+
+        Requirement 16.3: Format sizes compactly on narrow terminals
+
+        Args:
+            bytes_value: Size in bytes
+
+        Returns:
+            Compact formatted size string (e.g., "1.7GB", "234MB", "5.2KB")
+
+        Examples:
+            >>> display = ProgressDisplay()
+            >>> display.format_size_compact(1700000000)
+            '1.7GB'
+            >>> display.format_size_compact(234000000)
+            '234MB'
+            >>> display.format_size_compact(5200)
+            '5.2KB'
+        """
+        if bytes_value < 1024:
+            return f"{bytes_value}B"
+        elif bytes_value < 1024 * 1024:
+            kb = bytes_value / 1024
+            if kb >= 10:
+                return f"{kb:.0f}KB"
+            else:
+                return f"{kb:.1f}KB"
+        elif bytes_value < 1024 * 1024 * 1024:
+            mb = bytes_value / (1024 * 1024)
+            if mb >= 10:
+                return f"{mb:.0f}MB"
+            else:
+                return f"{mb:.1f}MB"
+        elif bytes_value < 1024 * 1024 * 1024 * 1024:
+            gb = bytes_value / (1024 * 1024 * 1024)
+            if gb >= 10:
+                return f"{gb:.0f}GB"
+            else:
+                return f"{gb:.1f}GB"
+        else:
+            tb = bytes_value / (1024 * 1024 * 1024 * 1024)
+            if tb >= 10:
+                return f"{tb:.0f}TB"
+            else:
+                return f"{tb:.1f}TB"
+
+    def format_url(self, url: str, max_width: int) -> str:
+        """
+        Format URL for display, truncating if necessary to fit within max_width.
+
+        On narrow terminals, URLs should be truncated or omitted to prevent wrapping.
+        This method truncates long URLs using ellipsis while preserving the beginning
+        of the URL (protocol and domain).
+
+        Requirement 16.4: Truncate or omit URLs to prevent wrapping on narrow terminals
+
+        Args:
+            url: The URL to format
+            max_width: Maximum width in characters for the formatted URL
+
+        Returns:
+            Formatted URL that fits within max_width characters
+
+        Examples:
+            >>> display = ProgressDisplay()
+            >>> display.format_url("https://example.com/file.zip", 50)
+            'https://example.com/file.zip'
+            >>> display.format_url("https://example.com/very/long/path/to/file.mp4", 30)
+            'https://example.com/very...'
+        """
+        # Ensure minimum width of 10 characters
+        if max_width < 10:
+            max_width = 10
+
+        # If URL fits within max_width, return as-is
+        if len(url) <= max_width:
+            return url
+
+        # Truncate with ellipsis
+        ellipsis = "..."
+        
+        # Calculate space available for the URL portion
+        # We want to preserve the beginning of the URL (protocol + domain)
+        available_length = max_width - len(ellipsis)
+        
+        # Ensure we have at least some characters for the URL
+        if available_length < 1:
+            # If max_width is too small, just truncate from the end
+            return url[:max_width]
+        
+        # Extract the beginning portion and add ellipsis
+        truncated = url[:available_length] + ellipsis
+        
+        return truncated

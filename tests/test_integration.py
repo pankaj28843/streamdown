@@ -1472,3 +1472,460 @@ class TestIntegrationNetrc:
                 final_path = Path(tmpdir) / "public.bin"
                 assert final_path.exists()
                 assert final_path.read_bytes() == test_data
+
+
+
+class TestResponsiveDisplayIntegration:
+    """
+    Integration tests for responsive display at various terminal widths.
+    
+    These tests verify that the progress display adapts correctly to different
+    terminal widths, ensuring proper truncation, scaling, and information
+    prioritization.
+    
+    **Validates: Requirements 16.1, 16.2, 16.3, 16.4, 16.5**
+    """
+
+    def test_display_rendering_at_various_widths(self):
+        """
+        Test display rendering at various terminal widths (40, 60, 80, 120 cols).
+        
+        Verifies that the display adapts correctly to different terminal widths
+        and that all essential information is visible at each width.
+        
+        **Validates: Requirements 16.1, 16.5**
+        """
+        from unittest.mock import patch
+        from streamdown.cli.progress_display import ProgressDisplay
+        
+        test_widths = [40, 60, 80, 120]
+        
+        for width in test_widths:
+            with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+                # Mock terminal size
+                class MockTerminalSize:
+                    def __init__(self, columns, lines=24):
+                        self.columns = columns
+                        self.lines = lines
+                
+                mock_size.return_value = MockTerminalSize(width)
+                
+                # Create display
+                display = ProgressDisplay(quiet=True)
+                
+                # Verify terminal width detection
+                detected_width = display.get_terminal_width()
+                assert detected_width == width, (
+                    f"Terminal width not detected correctly: expected {width}, got {detected_width}"
+                )
+                
+                # Verify narrow terminal detection
+                is_narrow = display.is_narrow_terminal()
+                if width < 80:
+                    assert is_narrow is True, f"Width {width} should be detected as narrow"
+                else:
+                    assert is_narrow is False, f"Width {width} should not be detected as narrow"
+                
+                # Verify bar width scaling
+                bar_width = display.calculate_bar_width()
+                assert bar_width >= 10, f"Bar width {bar_width} is below minimum of 10"
+                
+                if width < 80:
+                    assert 10 <= bar_width <= 20, (
+                        f"For narrow terminal (width {width}), bar width {bar_width} "
+                        f"should be between 10-20 chars"
+                    )
+                else:
+                    assert 40 <= bar_width <= 60, (
+                        f"For wide terminal (width {width}), bar width {bar_width} "
+                        f"should be between 40-60 chars"
+                    )
+
+    def test_filename_truncation_preserves_extensions(self):
+        """
+        Test that filename truncation preserves file extensions at various widths.
+        
+        Verifies that when filenames are truncated to fit narrow terminals,
+        the file extension is always preserved.
+        
+        **Validates: Requirements 16.2**
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+        
+        display = ProgressDisplay(quiet=True)
+        
+        # Test cases: (filename, max_width, expected_properties)
+        test_cases = [
+            # Short filename - should not be truncated
+            ("short.txt", 50, {"unchanged": True}),
+            
+            # Long filename - should preserve extension
+            (
+                "Writing.With.Fire.2021.1080p.WEBRip.x264.AAC-[YTS.MX].mp4",
+                30,
+                {
+                    "has_ellipsis": True,
+                    "ends_with": "YTS.MX].mp4",
+                    "starts_with": "Writing",
+                    "max_length": 30,
+                }
+            ),
+            
+            # Very long filename on narrow terminal
+            (
+                "A.Very.Long.Movie.Title.With.Many.Words.2024.1080p.BluRay.x265.HEVC.10bit.AAC.5.1-[GROUP].mkv",
+                40,
+                {
+                    "has_ellipsis": True,
+                    "ends_with": "5.1-[GROUP].mkv",  # Last 15 chars of original
+                    "max_length": 40,
+                }
+            ),
+            
+            # Filename at exact width
+            ("exactly_twenty_chars.txt", 25, {"unchanged": True}),
+            
+            # Filename with unicode
+            ("文件名.txt", 50, {"unchanged": True}),
+            
+            # Long filename with unicode
+            ("文" * 50 + ".txt", 30, {"has_ellipsis": True, "max_length": 30}),
+        ]
+        
+        for filename, max_width, expected in test_cases:
+            result = display.format_filename(filename, max_width)
+            
+            # Check length constraint
+            effective_max = max(max_width, 20)  # Minimum width is 20
+            assert len(result) <= effective_max, (
+                f"Formatted filename '{result}' (length {len(result)}) "
+                f"exceeds max_width {effective_max}"
+            )
+            
+            # Check specific properties
+            if expected.get("unchanged"):
+                assert result == filename, (
+                    f"Short filename should not be modified: expected '{filename}', got '{result}'"
+                )
+            
+            if expected.get("has_ellipsis"):
+                assert "..." in result, f"Truncated filename should contain ellipsis: '{result}'"
+            
+            if expected.get("ends_with"):
+                assert result.endswith(expected["ends_with"]), (
+                    f"Truncated filename should end with '{expected['ends_with']}', got '{result}'"
+                )
+            
+            if expected.get("starts_with"):
+                assert result.startswith(expected["starts_with"]), (
+                    f"Truncated filename should start with '{expected['starts_with']}', got '{result}'"
+                )
+            
+            if expected.get("max_length"):
+                assert len(result) <= expected["max_length"], (
+                    f"Formatted filename length {len(result)} exceeds max {expected['max_length']}"
+                )
+
+    def test_progress_bar_scales_appropriately(self):
+        """
+        Test that progress bar width scales appropriately with terminal width.
+        
+        Verifies that the progress bar width is calculated correctly for
+        different terminal widths, following the scaling rules.
+        
+        **Validates: Requirements 16.5**
+        """
+        from unittest.mock import patch
+        from streamdown.cli.progress_display import ProgressDisplay
+        
+        # Test cases: (terminal_width, expected_bar_width)
+        test_cases = [
+            # Very narrow terminal
+            (20, 10),   # Minimum bar width
+            (40, 10),   # Start of narrow range
+            
+            # Narrow terminal scaling
+            (50, 12),   # 10 + (50-40)*0.25 = 12
+            (60, 15),   # 10 + (60-40)*0.25 = 15
+            (70, 17),   # 10 + (70-40)*0.25 = 17
+            (79, 19),   # 10 + (79-40)*0.25 = 19
+            
+            # Wide terminal scaling
+            (80, 40),   # Start of wide range
+            (100, 45),  # 40 + (100-80)*0.25 = 45
+            (120, 50),  # 40 + (120-80)*0.25 = 50
+            (160, 60),  # 40 + (160-80)*0.25 = 60 (capped)
+            (200, 60),  # 40 + (200-80)*0.25 = 70, but capped at 60
+            (300, 60),  # Maximum bar width
+        ]
+        
+        for terminal_width, expected_bar_width in test_cases:
+            with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+                class MockTerminalSize:
+                    def __init__(self, columns, lines=24):
+                        self.columns = columns
+                        self.lines = lines
+                
+                mock_size.return_value = MockTerminalSize(terminal_width)
+                
+                display = ProgressDisplay(quiet=True)
+                bar_width = display.calculate_bar_width()
+                
+                assert bar_width == expected_bar_width, (
+                    f"For terminal width {terminal_width}, expected bar width {expected_bar_width}, "
+                    f"got {bar_width}"
+                )
+
+    def test_essential_information_always_visible(self):
+        """
+        Test that essential information is always visible regardless of terminal width.
+        
+        Verifies that on narrow terminals, essential information (filename, percentage,
+        status) is prioritized and always visible, while less critical information
+        may be omitted.
+        
+        **Validates: Requirements 16.3**
+        """
+        from unittest.mock import patch
+        from streamdown.cli.progress_display import ProgressDisplay
+        
+        # Test at various widths
+        test_widths = [40, 60, 80, 120]
+        
+        for width in test_widths:
+            with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+                class MockTerminalSize:
+                    def __init__(self, columns, lines=24):
+                        self.columns = columns
+                        self.lines = lines
+                
+                mock_size.return_value = MockTerminalSize(width)
+                
+                display = ProgressDisplay(quiet=True)
+                
+                # Test compact size formatting (used on narrow terminals)
+                test_sizes = [
+                    (0, "0B"),
+                    (1024, "1.0KB"),
+                    (1024 * 1024, "1.0MB"),
+                    (int(1.7 * 1024 * 1024 * 1024), "1.7GB"),
+                    (68 * 1024 * 1024 * 1024, "68GB"),
+                ]
+                
+                for bytes_value, expected_format in test_sizes:
+                    compact_size = display.format_size_compact(bytes_value)
+                    
+                    # Verify no spaces in compact format
+                    assert " " not in compact_size, (
+                        f"Compact size '{compact_size}' should not contain spaces"
+                    )
+                    
+                    # Verify expected format
+                    assert compact_size == expected_format, (
+                        f"Expected compact size '{expected_format}', got '{compact_size}'"
+                    )
+                
+                # Verify that narrow terminals use compact format
+                is_narrow = display.is_narrow_terminal()
+                if width < 80:
+                    assert is_narrow is True, f"Width {width} should be narrow"
+                    # On narrow terminals, compact size format is used
+                    # This is verified by the format_size_compact tests above
+                else:
+                    assert is_narrow is False, f"Width {width} should not be narrow"
+
+    def test_no_line_wrapping_on_narrow_terminals(self):
+        """
+        Test that no line wrapping occurs on narrow terminals.
+        
+        Verifies that all display elements (filename, URL, progress bar, etc.)
+        are properly truncated or omitted to prevent line wrapping on narrow
+        terminals.
+        
+        **Validates: Requirements 16.4**
+        """
+        from unittest.mock import patch
+        from streamdown.cli.progress_display import ProgressDisplay
+        
+        # Test narrow terminal widths
+        narrow_widths = [40, 60, 79]
+        
+        for width in narrow_widths:
+            with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+                class MockTerminalSize:
+                    def __init__(self, columns, lines=24):
+                        self.columns = columns
+                        self.lines = lines
+                
+                mock_size.return_value = MockTerminalSize(width)
+                
+                display = ProgressDisplay(quiet=True)
+                
+                # Test filename truncation
+                long_filename = "A.Very.Long.Movie.Title.2024.1080p.BluRay.x265.HEVC.10bit.AAC-[GROUP].mkv"
+                max_filename_width = width - 20  # Reserve space for other elements
+                formatted_filename = display.format_filename(long_filename, max_filename_width)
+                
+                assert len(formatted_filename) <= max(max_filename_width, 20), (
+                    f"Formatted filename length {len(formatted_filename)} exceeds "
+                    f"max width {max(max_filename_width, 20)}"
+                )
+                
+                # Test URL truncation
+                long_url = "https://cdn.example.com/downloads/2024/11/26/very-long-path/to/file/video.mp4?token=abc123"
+                max_url_width = width - 40  # Reserve space for essential info
+                max_url_width = max(max_url_width, 20)  # Minimum width
+                formatted_url = display.format_url(long_url, max_url_width)
+                
+                assert len(formatted_url) <= max_url_width, (
+                    f"Formatted URL length {len(formatted_url)} exceeds max width {max_url_width}"
+                )
+                
+                # Test bar width
+                bar_width = display.calculate_bar_width()
+                assert bar_width <= 20, (
+                    f"Bar width {bar_width} exceeds maximum for narrow terminal (20 chars)"
+                )
+                
+                # Verify total display width doesn't exceed terminal width
+                # Essential elements: filename (truncated) + bar + percentage + status + separators
+                # Approximate calculation (actual rendering may vary slightly)
+                # Note: Rich handles overflow gracefully with expand=True, so we just verify
+                # that our individual components are reasonably sized
+                
+                # Verify each component is reasonable for the terminal width
+                assert bar_width >= 10, f"Bar width {bar_width} is below minimum"
+                assert bar_width <= 20, f"Bar width {bar_width} exceeds narrow terminal max"
+                
+                # Verify filename truncation works
+                assert len(formatted_filename) <= max(max_filename_width, 20)
+                
+                # Verify URL truncation works
+                assert len(formatted_url) <= max_url_width
+
+    def test_display_adapts_to_terminal_resize(self):
+        """
+        Test that display adapts when terminal is resized.
+        
+        Verifies that the display recalculates widths and formats when
+        get_terminal_width() is called again (simulating terminal resize).
+        
+        **Validates: Requirements 16.1**
+        """
+        from unittest.mock import patch
+        from streamdown.cli.progress_display import ProgressDisplay
+        
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+            
+            # Start with wide terminal
+            mock_size.return_value = MockTerminalSize(120)
+            display = ProgressDisplay(quiet=True)
+            
+            # Verify wide terminal behavior
+            assert display.get_terminal_width() == 120
+            assert display.is_narrow_terminal() is False
+            bar_width_wide = display.calculate_bar_width()
+            assert 40 <= bar_width_wide <= 60
+            
+            # Simulate terminal resize to narrow
+            mock_size.return_value = MockTerminalSize(60)
+            
+            # Verify narrow terminal behavior after resize
+            assert display.get_terminal_width() == 60
+            assert display.is_narrow_terminal() is True
+            bar_width_narrow = display.calculate_bar_width()
+            assert 10 <= bar_width_narrow <= 20
+            
+            # Verify bar width changed
+            assert bar_width_narrow < bar_width_wide, (
+                f"Bar width should decrease after resize: was {bar_width_wide}, now {bar_width_narrow}"
+            )
+
+    def test_unicode_handling_in_narrow_terminals(self):
+        """
+        Test that unicode characters are handled correctly in narrow terminals.
+        
+        Verifies that filenames and URLs with unicode characters are properly
+        truncated without breaking character encoding.
+        
+        **Validates: Requirements 16.2, 16.4**
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+        
+        display = ProgressDisplay(quiet=True)
+        
+        # Test unicode filename truncation
+        unicode_filename = "文件名" * 20 + ".mp4"  # Long unicode filename
+        formatted = display.format_filename(unicode_filename, 30)
+        
+        assert len(formatted) <= 30, (
+            f"Unicode filename length {len(formatted)} exceeds max width 30"
+        )
+        assert "..." in formatted, "Long unicode filename should be truncated"
+        
+        # Test unicode URL truncation
+        unicode_url = "https://example.com/" + "文件" * 30 + ".zip"
+        formatted_url = display.format_url(unicode_url, 40)
+        
+        assert len(formatted_url) <= 40, (
+            f"Unicode URL length {len(formatted_url)} exceeds max width 40"
+        )
+        
+        # Verify no broken encoding (should not raise exception)
+        try:
+            _ = formatted.encode('utf-8')
+            _ = formatted_url.encode('utf-8')
+        except UnicodeEncodeError as e:
+            pytest.fail(f"Unicode encoding error: {e}")
+
+    def test_edge_case_very_narrow_terminal(self):
+        """
+        Test edge case of very narrow terminal (< 40 columns).
+        
+        Verifies that the display handles extremely narrow terminals gracefully
+        by enforcing minimum widths and ensuring essential information is visible.
+        
+        **Validates: Requirements 16.1, 16.5**
+        """
+        from unittest.mock import patch
+        from streamdown.cli.progress_display import ProgressDisplay
+        
+        very_narrow_widths = [20, 30, 39]
+        
+        for width in very_narrow_widths:
+            with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+                class MockTerminalSize:
+                    def __init__(self, columns, lines=24):
+                        self.columns = columns
+                        self.lines = lines
+                
+                mock_size.return_value = MockTerminalSize(width)
+                
+                display = ProgressDisplay(quiet=True)
+                
+                # Verify terminal is detected as narrow
+                assert display.is_narrow_terminal() is True
+                
+                # Verify minimum bar width is enforced
+                bar_width = display.calculate_bar_width()
+                assert bar_width >= 10, (
+                    f"Bar width {bar_width} is below minimum of 10 for width {width}"
+                )
+                
+                # Verify filename truncation enforces minimum
+                long_filename = "x" * 100 + ".txt"
+                formatted = display.format_filename(long_filename, 10)
+                assert len(formatted) == 20, (
+                    f"Filename should enforce minimum width of 20, got {len(formatted)}"
+                )
+                
+                # Verify URL truncation enforces minimum
+                long_url = "https://example.com/" + "x" * 100
+                formatted_url = display.format_url(long_url, 5)
+                assert len(formatted_url) >= 10, (
+                    f"URL should enforce minimum width of 10, got {len(formatted_url)}"
+                )

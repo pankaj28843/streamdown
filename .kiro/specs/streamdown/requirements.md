@@ -198,3 +198,15 @@ Streamdown is a modern asyncio-based HTTP(S) downloader CLI tool written in pure
 5. WHEN netrc-path is specified THEN Streamdown SHALL read credentials from the specified file instead of the default location
 6. WHEN the default netrc file does not exist and no custom path is specified THEN Streamdown SHALL proceed without netrc authentication
 7. WHEN netrc file contains invalid syntax THEN Streamdown SHALL log a warning and proceed without netrc authentication
+
+### Requirement 16
+
+**User Story:** As a user on a mobile device or small terminal, I want the progress display to adapt to narrow screens, so that I can monitor downloads without text wrapping or information being cut off.
+
+#### Acceptance Criteria
+
+1. WHEN the terminal width is less than 80 columns THEN Streamdown SHALL detect the narrow width and adjust the display layout
+2. WHEN displaying filenames on narrow terminals THEN Streamdown SHALL truncate long filenames to fit within available space while preserving file extension
+3. WHEN displaying progress information on narrow terminals THEN Streamdown SHALL prioritize essential information and omit or abbreviate less critical details
+4. WHEN displaying URLs on narrow terminals THEN Streamdown SHALL truncate or omit URLs to prevent wrapping
+5. WHEN the progress bar is displayed on narrow terminals THEN Streamdown SHALL scale the bar width proportionally to terminal width while maintaining readability
