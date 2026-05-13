@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import suppress
 from datetime import datetime
@@ -35,7 +36,23 @@ from streamdown.infrastructure.metadata_repository import (
 
 logger = logging.getLogger("streamdown.coordinator")
 
-_PROGRESS_HEARTBEAT_INTERVAL_SECONDS = 5.0
+_PROGRESS_HEARTBEAT_INTERVAL_SECONDS = 30.0
+_PROGRESS_REFRESH_INTERVAL_ENV = "STREAMDOWN_PROGRESS_REFRESH_INTERVAL"
+
+
+def _progress_heartbeat_interval_seconds() -> float:
+    """Return the configured progress heartbeat interval."""
+    configured = os.environ.get(_PROGRESS_REFRESH_INTERVAL_ENV)
+    if configured is None:
+        return _PROGRESS_HEARTBEAT_INTERVAL_SECONDS
+
+    try:
+        interval = float(configured)
+    except ValueError:
+        return _PROGRESS_HEARTBEAT_INTERVAL_SECONDS
+
+    return interval if interval > 0 else _PROGRESS_HEARTBEAT_INTERVAL_SECONDS
+
 
 if TYPE_CHECKING:
     from streamdown.cli.progress_display import ProgressDisplay
@@ -408,7 +425,7 @@ class DownloadCoordinator:
         async def progress_heartbeat() -> None:
             """Refresh progress display periodically even when no buffers arrive."""
             while True:
-                await asyncio.sleep(_PROGRESS_HEARTBEAT_INTERVAL_SECONDS)
+                await asyncio.sleep(_progress_heartbeat_interval_seconds())
                 async with update_lock:
                     publish_progress_locked()
 

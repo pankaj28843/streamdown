@@ -95,6 +95,13 @@ python3 -m streamdown --help
 
 `--progress-bar off` avoids pip's Rich/live progress renderer, which can be unstable in some iOS terminal environments.
 
+Streamdown refreshes live progress at most every 30 seconds by default on manual-refresh terminals. If a-Shell is still unstable, increase the interval before running downloads:
+
+```bash
+export STREAMDOWN_PROGRESS_REFRESH_INTERVAL=120
+python3 -m streamdown URL
+```
+
 If a-Shell fails while preparing metadata from the source zip, install the prebuilt wheel checked in on `main` instead:
 
 ```bash

@@ -75,6 +75,13 @@ class RecordingProgressDisplay:
         self.statuses.append(DownloadStatus.FAILED)
 
 
+def test_progress_heartbeat_interval_can_be_tuned_with_environment(monkeypatch) -> None:
+    """Coordinator heartbeat should honor the shared progress interval override."""
+    monkeypatch.setenv("STREAMDOWN_PROGRESS_REFRESH_INTERVAL", "60")
+
+    assert download_coordinator._progress_heartbeat_interval_seconds() == 60.0
+
+
 def create_options(directory: Path) -> DownloadOptions:
     """Create options that force a single chunk made of multiple buffers."""
     return DownloadOptions(

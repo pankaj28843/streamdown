@@ -1,6 +1,7 @@
 """Progress display using rich for terminal UI."""
 
 import asyncio
+import os
 import shutil
 import time
 from collections.abc import Callable
@@ -43,7 +44,8 @@ class DownloadTracker:
 _NARROW_TERMINAL_WIDTH = 80
 _NARROW_STATUS_WIDTH = len("downloading")
 _NARROW_META_WIDTH = len("100.0% 909TB")
-_FORCED_REFRESH_INTERVAL_SECONDS = 5.0
+_FORCED_REFRESH_INTERVAL_SECONDS = 30.0
+_PROGRESS_REFRESH_INTERVAL_ENV = "STREAMDOWN_PROGRESS_REFRESH_INTERVAL"
 _MIDDLE_ELLIPSIS = "…"
 
 
@@ -104,6 +106,20 @@ def _task_field(task: Task, name: str, default: str = "") -> str:
     """Read a Rich task field as a string."""
     value = task.fields.get(name, default)
     return default if value is None else str(value)
+
+
+def _progress_refresh_interval_seconds() -> float:
+    """Return the configured manual refresh interval for mobile-safe rendering."""
+    configured = os.environ.get(_PROGRESS_REFRESH_INTERVAL_ENV)
+    if configured is None:
+        return _FORCED_REFRESH_INTERVAL_SECONDS
+
+    try:
+        interval = float(configured)
+    except ValueError:
+        return _FORCED_REFRESH_INTERVAL_SECONDS
+
+    return interval if interval > 0 else _FORCED_REFRESH_INTERVAL_SECONDS
 
 
 def _render_narrow_task_header(task: Task, terminal_width: int) -> Table:
@@ -484,7 +500,7 @@ class ProgressDisplay:
             return
 
         now = time.monotonic()
-        if now - self._last_forced_refresh_time < _FORCED_REFRESH_INTERVAL_SECONDS:
+        if now - self._last_forced_refresh_time < _progress_refresh_interval_seconds():
             return
 
         self._force_refresh(now)

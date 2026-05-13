@@ -129,8 +129,8 @@ def test_update_status_refreshes_immediately_when_auto_refresh_is_disabled():
     assert fake_progress.refresh_count == 1
 
 
-def test_update_progress_forces_refresh_on_five_second_cadence(monkeypatch):
-    """A visible refresh should be forced at most once per status interval."""
+def test_update_progress_forces_refresh_on_thirty_second_cadence(monkeypatch):
+    """A visible refresh should be forced at most once per mobile-safe interval."""
     display = ProgressDisplay(quiet=False)
     fake_progress = FakeProgress()
     display.progress = fake_progress  # type: ignore[assignment]
@@ -143,13 +143,44 @@ def test_update_progress_forces_refresh_on_five_second_cadence(monkeypatch):
         downloaded_bytes=0,
         start_time=0.0,
     )
-    times = iter([100.0, 104.0, 105.0])
+    times = iter([100.0, 129.0, 130.0])
     monkeypatch.setattr(progress_display.time, "monotonic", lambda: next(times))
 
     display.update_progress("https://example.com/file.bin", 10, 100)
-    display.update_progress("https://example.com/file.bin", 20, 100)
-    display.update_progress("https://example.com/file.bin", 30, 100)
+    assert fake_progress.refresh_count == 1
 
+    display.update_progress("https://example.com/file.bin", 20, 100)
+    assert fake_progress.refresh_count == 1
+
+    display.update_progress("https://example.com/file.bin", 30, 100)
+    assert fake_progress.refresh_count == 2
+
+
+def test_progress_refresh_interval_can_be_tuned_with_environment(monkeypatch):
+    """Mobile terminals can slow visible refreshes without a new build."""
+    display = ProgressDisplay(quiet=False)
+    fake_progress = FakeProgress()
+    display.progress = fake_progress  # type: ignore[assignment]
+    display.downloads["https://example.com/file.bin"] = DownloadTracker(
+        url="https://example.com/file.bin",
+        filename="file.bin",
+        task_id=1,  # type: ignore[arg-type]
+        status=DownloadStatus.RUNNING,
+        total_bytes=100,
+        downloaded_bytes=0,
+        start_time=0.0,
+    )
+    monkeypatch.setenv("STREAMDOWN_PROGRESS_REFRESH_INTERVAL", "60")
+    times = iter([100.0, 159.0, 160.0])
+    monkeypatch.setattr(progress_display.time, "monotonic", lambda: next(times))
+
+    display.update_progress("https://example.com/file.bin", 10, 100)
+    assert fake_progress.refresh_count == 1
+
+    display.update_progress("https://example.com/file.bin", 20, 100)
+    assert fake_progress.refresh_count == 1
+
+    display.update_progress("https://example.com/file.bin", 30, 100)
     assert fake_progress.refresh_count == 2
 
 
