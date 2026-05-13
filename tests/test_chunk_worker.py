@@ -73,10 +73,7 @@ async def test_retry_limit_enforcement(
         )
 
     # Verify that fetch_range was called exactly max_tries times
-    assert call_count == max_tries, (
-        f"Expected {max_tries} attempts, but got {call_count}"
-    )
-
+    assert call_count == max_tries, f"Expected {max_tries} attempts, but got {call_count}"
 
 
 # Feature: streamdown, Property 22: Retry wait duration
@@ -152,17 +149,14 @@ async def test_retry_wait_duration(
     # Check wait between first and second attempt
     wait_1_2 = attempt_times[1] - attempt_times[0]
     assert wait_1_2 >= retry_wait, (
-        f"Wait between attempts 1-2 was {wait_1_2:.3f}s, "
-        f"expected at least {retry_wait:.3f}s"
+        f"Wait between attempts 1-2 was {wait_1_2:.3f}s, expected at least {retry_wait:.3f}s"
     )
 
     # Check wait between second and third attempt
     wait_2_3 = attempt_times[2] - attempt_times[1]
     assert wait_2_3 >= retry_wait, (
-        f"Wait between attempts 2-3 was {wait_2_3:.3f}s, "
-        f"expected at least {retry_wait:.3f}s"
+        f"Wait between attempts 2-3 was {wait_2_3:.3f}s, expected at least {retry_wait:.3f}s"
     )
-
 
 
 # Feature: streamdown, Property 30: Bounded buffer sizes
@@ -196,7 +190,7 @@ async def test_bounded_buffer_sizes(
     # Create mock HTTP client that yields data in various buffer sizes
     def make_fetch_range(*args, **kwargs):
         # Verify that buffer_size parameter is passed correctly
-        actual_buffer_size = kwargs.get('buffer_size', 64 * 1024)
+        actual_buffer_size = kwargs.get("buffer_size", 64 * 1024)
 
         async def fetch_gen():
             # Simulate streaming data in chunks
@@ -236,27 +230,107 @@ async def test_bounded_buffer_sizes(
 
     # Verify all yielded buffers respect the buffer size limit
     for size in yielded_buffer_sizes:
-        assert size <= buffer_size, (
-            f"Buffer size {size} exceeds limit {buffer_size}"
-        )
+        assert size <= buffer_size, f"Buffer size {size} exceeds limit {buffer_size}"
 
     # Verify all written chunks respect the buffer size limit
     for size in written_chunks:
-        assert size <= buffer_size, (
-            f"Written chunk size {size} exceeds buffer limit {buffer_size}"
-        )
+        assert size <= buffer_size, f"Written chunk size {size} exceeds buffer limit {buffer_size}"
 
     # Verify that data was actually streamed (not all at once)
     if chunk_size > buffer_size:
         assert len(yielded_buffer_sizes) > 1, (
             "Expected multiple buffers for large chunk, but got only one"
         )
-        assert len(written_chunks) > 1, (
-            "Expected multiple writes for large chunk, but got only one"
-        )
+        assert len(written_chunks) > 1, "Expected multiple writes for large chunk, but got only one"
 
     # Verify total data written equals chunk size
     total_written = sum(written_chunks)
     assert total_written == chunk_size, (
         f"Total written {total_written} doesn't match chunk size {chunk_size}"
     )
+
+
+@pytest.mark.asyncio
+async def test_chunk_worker_reports_progress_after_each_streamed_buffer() -> None:
+    """Chunk worker should report byte progress before the chunk completes."""
+    chunk = Chunk(
+        id=ChunkId(7),
+        range=ByteRange(start=10, end=15),
+        status=ChunkStatus.PENDING,
+    )
+
+    async def fetch_range(*args, **kwargs):
+        yield b"ab"
+        yield b"cde"
+        yield b"f"
+
+    http_client = MagicMock(spec=HttpDownloader)
+    http_client.fetch_range = fetch_range
+    file_writer = MagicMock(spec=PartFileWriter)
+    file_writer.write_at_offset = AsyncMock()
+    reports: list[tuple[ChunkId, int]] = []
+
+    async def report_progress(chunk_id: ChunkId, downloaded_bytes: int) -> None:
+        reports.append((chunk_id, downloaded_bytes))
+
+    await download_chunk_with_retry(
+        url="http://example.com/file",
+        chunk=chunk,
+        http_client=http_client,
+        file_writer=file_writer,
+        part_file_path=Path("/tmp/test.part"),
+        max_tries=1,
+        retry_wait=0.0,
+        progress_callback=report_progress,
+    )
+
+    assert reports == [
+        (ChunkId(7), 2),
+        (ChunkId(7), 5),
+        (ChunkId(7), 6),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chunk_worker_resets_progress_before_retrying_partial_chunk() -> None:
+    """Partial bytes from a failed attempt should not stay counted on retry."""
+    chunk = Chunk(
+        id=ChunkId(3),
+        range=ByteRange(start=0, end=2),
+        status=ChunkStatus.PENDING,
+    )
+    attempts = 0
+
+    def fetch_range(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+
+        async def fetch_gen():
+            if attempts == 1:
+                yield b"xy"
+                raise NetworkError("drop after partial chunk")
+            yield b"abc"
+
+        return fetch_gen()
+
+    http_client = MagicMock(spec=HttpDownloader)
+    http_client.fetch_range = fetch_range
+    file_writer = MagicMock(spec=PartFileWriter)
+    file_writer.write_at_offset = AsyncMock()
+    reports: list[int] = []
+
+    async def report_progress(chunk_id: ChunkId, downloaded_bytes: int) -> None:
+        reports.append(downloaded_bytes)
+
+    await download_chunk_with_retry(
+        url="http://example.com/file",
+        chunk=chunk,
+        http_client=http_client,
+        file_writer=file_writer,
+        part_file_path=Path("/tmp/test.part"),
+        max_tries=2,
+        retry_wait=0.0,
+        progress_callback=report_progress,
+    )
+
+    assert reports == [2, 0, 3]

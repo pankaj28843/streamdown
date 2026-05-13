@@ -102,17 +102,18 @@ class DownloadCoordinator:
                 # Requirement 1.1: Perform HEAD request to get file metadata
                 logger.info(f"Starting download: {self.url}")
                 logger.debug(f"Fetching metadata for {self.url}")
-                
+
                 # Determine output filename for progress display (before HEAD request)
                 if self.options.output_name:
                     filename = self.options.output_name
                 else:
                     from urllib.parse import unquote, urlparse
+
                     parsed = urlparse(self.url)
                     filename = unquote(parsed.path.split("/")[-1])
                     if not filename:
                         filename = "download"
-                
+
                 head_response = await self.http_client.fetch_head(self.url)
 
                 # Add to progress display
@@ -185,7 +186,9 @@ class DownloadCoordinator:
                     await self.metadata_repo.delete(meta_path.value)
 
                     progress = download_job.compute_progress()
-                    logger.debug(f"Downloaded {progress.downloaded_bytes} bytes in {time.time() - start_time:.2f}s")
+                    logger.debug(
+                        f"Downloaded {progress.downloaded_bytes} bytes in {time.time() - start_time:.2f}s"
+                    )
 
                     return DownloadResult(
                         url=self.url,
@@ -211,11 +214,11 @@ class DownloadCoordinator:
 
             except Exception as e:
                 logger.error(f"Download failed with exception: {self.url}", exc_info=True)
-                
+
                 # Mark as failed in progress display
                 if self.progress_display is not None:
                     self.progress_display.mark_failed(self.url, str(e))
-                
+
                 return DownloadResult(
                     url=self.url,
                     status=DownloadStatus.FAILED,
@@ -244,6 +247,7 @@ class DownloadCoordinator:
         else:
             # Extract filename from URL
             from urllib.parse import unquote, urlparse
+
             parsed = urlparse(self.url)
             filename = unquote(parsed.path.split("/")[-1])
             if not filename:
@@ -309,7 +313,9 @@ class DownloadCoordinator:
                         meta_path=meta_path,
                     )
                 else:
-                    logger.info(f"Cannot resume download (incompatible metadata), starting fresh: {self.url}")
+                    logger.info(
+                        f"Cannot resume download (incompatible metadata), starting fresh: {self.url}"
+                    )
 
         # Requirement 2.5: Fresh start (continue disabled or no valid metadata)
         # Delete existing part file if continue is disabled
@@ -374,8 +380,33 @@ class DownloadCoordinator:
 
         # Track in-flight chunks and use a lock for updating download_job
         in_flight: set[ChunkId] = set()
+        in_progress_bytes: dict[ChunkId, int] = {}
         semaphore = asyncio.Semaphore(max_concurrent)
         update_lock = asyncio.Lock()
+
+        def bytes_downloaded_with_in_progress(job: DownloadJob) -> int:
+            """Return completed bytes plus bytes currently streamed by workers."""
+            progress = job.compute_progress()
+            downloaded_bytes = progress.downloaded_bytes + sum(in_progress_bytes.values())
+            return min(downloaded_bytes, progress.total_bytes)
+
+        async def update_in_flight_progress(chunk_id: ChunkId, chunk_bytes: int) -> None:
+            """Update display progress for bytes streamed before chunk completion."""
+            if self.progress_display is None:
+                return
+
+            async with update_lock:
+                if chunk_bytes > 0:
+                    in_progress_bytes[chunk_id] = chunk_bytes
+                else:
+                    in_progress_bytes.pop(chunk_id, None)
+
+                progress = download_job.compute_progress()
+                self.progress_display.update_progress(
+                    url=self.url,
+                    downloaded_bytes=bytes_downloaded_with_in_progress(download_job),
+                    total_bytes=progress.total_bytes,
+                )
 
         # Create tasks for all pending chunks
         async def download_chunk_task(chunk: Chunk) -> tuple[ChunkId, bool]:
@@ -393,10 +424,12 @@ class DownloadCoordinator:
                         part_file_path=part_file_path,
                         max_tries=self.options.max_tries,
                         retry_wait=self.options.retry_wait,
+                        progress_callback=update_in_flight_progress,
                     )
 
                     # Update download job and metadata after chunk completion
                     async with update_lock:
+                        in_progress_bytes.pop(chunk.id, None)
                         download_job = download_job.mark_chunk_completed(chunk.id)
                         metadata = DownloadMetadata.from_download_job(download_job)
                         await self.metadata_repo.save(download_job.meta_path.value, metadata)
@@ -414,6 +447,15 @@ class DownloadCoordinator:
 
                 except Exception:
                     # Chunk failed after all retries
+                    async with update_lock:
+                        in_progress_bytes.pop(chunk.id, None)
+                        if self.progress_display is not None:
+                            progress = download_job.compute_progress()
+                            self.progress_display.update_progress(
+                                url=self.url,
+                                downloaded_bytes=bytes_downloaded_with_in_progress(download_job),
+                                total_bytes=progress.total_bytes,
+                            )
                     return (chunk.id, False)
 
                 finally:
@@ -421,8 +463,7 @@ class DownloadCoordinator:
 
         # Find all pending chunks
         pending_chunks = [
-            chunk for chunk in download_job.chunks.values()
-            if chunk.status == ChunkStatus.PENDING
+            chunk for chunk in download_job.chunks.values() if chunk.status == ChunkStatus.PENDING
         ]
 
         # Download all chunks concurrently
