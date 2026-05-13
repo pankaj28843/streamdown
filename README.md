@@ -95,6 +95,12 @@ python3 -m streamdown --help
 
 `--progress-bar off` avoids pip's Rich/live progress renderer, which can be unstable in some iOS terminal environments.
 
+If a-Shell fails while preparing metadata from the source zip, install the prebuilt wheel checked in on `main` instead:
+
+```bash
+python3 -m pip install --user --upgrade --force-reinstall --no-cache-dir --progress-bar off "https://raw.githubusercontent.com/pankaj28843/streamdown/main/dist/streamdown-0.1.0-py3-none-any.whl"
+```
+
 If your shell exposes pip-installed scripts on `PATH`, this should also work after install:
 
 ```bash
