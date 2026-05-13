@@ -48,6 +48,7 @@ When Streamdown detects a terminal width less than 80 columns, it automatically:
 Streamdown works great on mobile devices with terminal emulators:
 
 - **Termux** (Android) - Full support with automatic width detection
+- **a-Shell** (iOS) - Use the `python3 -m streamdown` form if the console script is not on `PATH`
 - **iSH** (iOS) - Adapts to small screen sizes
 - **SSH clients** (iOS/Android) - Responsive display for remote sessions
 - **Blink Shell** (iOS) - Works seamlessly with adaptive layout
@@ -74,6 +75,23 @@ uv tool install streamdown
 
 ```bash
 pip install streamdown
+```
+
+### Latest `main` from GitHub zip archive
+
+For a clean reinstall in a-Shell and similar iOS terminal apps, install directly from the `main` branch zip archive:
+
+```bash
+python3 -m pip uninstall -y streamdown
+python3 -m pip install --upgrade --no-cache-dir \
+  "https://github.com/pankaj28843/streamdown/archive/refs/heads/main.zip"
+python3 -m streamdown --help
+```
+
+If your shell exposes pip-installed scripts on `PATH`, this should also work after install:
+
+```bash
+streamdown --help
 ```
 
 ### From Source
