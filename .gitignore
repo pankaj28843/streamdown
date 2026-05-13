@@ -46,3 +46,7 @@ Thumbs.db
 # Streamdown specific
 *.part
 *.part.meta.json
+
+# temp files
+tmp*
+tmp/
