@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +34,8 @@ from streamdown.infrastructure.metadata_repository import (
 )
 
 logger = logging.getLogger("streamdown.coordinator")
+
+_PROGRESS_HEARTBEAT_INTERVAL_SECONDS = 5.0
 
 if TYPE_CHECKING:
     from streamdown.cli.progress_display import ProgressDisplay
@@ -390,6 +393,25 @@ class DownloadCoordinator:
             downloaded_bytes = progress.downloaded_bytes + sum(in_progress_bytes.values())
             return min(downloaded_bytes, progress.total_bytes)
 
+        def publish_progress_locked() -> None:
+            """Publish current progress while update_lock is held."""
+            if self.progress_display is None:
+                return
+
+            progress = download_job.compute_progress()
+            self.progress_display.update_progress(
+                url=self.url,
+                downloaded_bytes=bytes_downloaded_with_in_progress(download_job),
+                total_bytes=progress.total_bytes,
+            )
+
+        async def progress_heartbeat() -> None:
+            """Refresh progress display periodically even when no buffers arrive."""
+            while True:
+                await asyncio.sleep(_PROGRESS_HEARTBEAT_INTERVAL_SECONDS)
+                async with update_lock:
+                    publish_progress_locked()
+
         async def update_in_flight_progress(chunk_id: ChunkId, chunk_bytes: int) -> None:
             """Update display progress for bytes streamed before chunk completion."""
             if self.progress_display is None:
@@ -401,12 +423,7 @@ class DownloadCoordinator:
                 else:
                     in_progress_bytes.pop(chunk_id, None)
 
-                progress = download_job.compute_progress()
-                self.progress_display.update_progress(
-                    url=self.url,
-                    downloaded_bytes=bytes_downloaded_with_in_progress(download_job),
-                    total_bytes=progress.total_bytes,
-                )
+                publish_progress_locked()
 
         # Create tasks for all pending chunks
         async def download_chunk_task(chunk: Chunk) -> tuple[ChunkId, bool]:
@@ -449,13 +466,7 @@ class DownloadCoordinator:
                     # Chunk failed after all retries
                     async with update_lock:
                         in_progress_bytes.pop(chunk.id, None)
-                        if self.progress_display is not None:
-                            progress = download_job.compute_progress()
-                            self.progress_display.update_progress(
-                                url=self.url,
-                                downloaded_bytes=bytes_downloaded_with_in_progress(download_job),
-                                total_bytes=progress.total_bytes,
-                            )
+                        publish_progress_locked()
                     return (chunk.id, False)
 
                 finally:
@@ -466,9 +477,20 @@ class DownloadCoordinator:
             chunk for chunk in download_job.chunks.values() if chunk.status == ChunkStatus.PENDING
         ]
 
-        # Download all chunks concurrently
-        tasks = [download_chunk_task(chunk) for chunk in pending_chunks]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Download all chunks concurrently, with a periodic UI heartbeat for stalls.
+        tasks = [asyncio.create_task(download_chunk_task(chunk)) for chunk in pending_chunks]
+        heartbeat_task = (
+            asyncio.create_task(progress_heartbeat())
+            if self.progress_display is not None and tasks
+            else None
+        )
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat_task
 
         # No need to update download_job here since it's already updated in the tasks
 

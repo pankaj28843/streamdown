@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from streamdown.application import download_coordinator
 from streamdown.application.download_coordinator import DownloadCoordinator
 from streamdown.application.dtos import DownloadOptions
 from streamdown.domain.enums import DownloadStatus, StreamingMode
@@ -18,8 +19,9 @@ from streamdown.infrastructure.metadata_repository import MetadataRepository
 class StreamingHttpClient:
     """HTTP client that yields one chunk as several delayed buffers."""
 
-    def __init__(self, buffer_sizes: list[int]):
+    def __init__(self, buffer_sizes: list[int], initial_delay: float = 0.0):
         self.buffer_sizes = buffer_sizes
+        self.initial_delay = initial_delay
 
     async def __aenter__(self):
         return self
@@ -36,6 +38,8 @@ class StreamingHttpClient:
         )
 
     async def fetch_range(self, url, byte_range, buffer_size=64 * 1024):
+        if self.initial_delay:
+            await asyncio.sleep(self.initial_delay)
         for size in self.buffer_sizes:
             await asyncio.sleep(0)
             yield b"x" * size
@@ -46,6 +50,7 @@ class RecordingProgressDisplay:
 
     def __init__(self):
         self.progress_values: list[int] = []
+        self.update_values: list[int] = []
         self.statuses: list[DownloadStatus] = []
 
     def add_download(self, url: str, filename: str, total_bytes: int) -> None:
@@ -61,6 +66,7 @@ class RecordingProgressDisplay:
         total_bytes: int | None = None,
     ) -> None:
         self.progress_values.append(downloaded_bytes)
+        self.update_values.append(downloaded_bytes)
 
     def mark_complete(self, url: str, final_path: Path) -> None:
         self.statuses.append(DownloadStatus.COMPLETED)
@@ -93,6 +99,38 @@ def create_options(directory: Path) -> DownloadOptions:
         no_netrc=False,
         netrc_path=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_progress_heartbeat_updates_during_long_buffer_wait(monkeypatch) -> None:
+    """Progress display should be refreshed periodically even before bytes arrive."""
+    monkeypatch.setattr(
+        download_coordinator,
+        "_PROGRESS_HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+        raising=False,
+    )
+    progress_display = RecordingProgressDisplay()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        coordinator = DownloadCoordinator(
+            url="https://example.com/test.bin",
+            options=create_options(Path(tmpdir)),
+            http_client=StreamingHttpClient([100], initial_delay=0.035),
+            file_writer=PartFileWriter(),
+            metadata_repo=MetadataRepository(),
+            chunk_planner=ChunkPlanner(StreamingMode.DEFAULT),
+            resume_policy=ResumePolicy(),
+            progress_display=progress_display,  # type: ignore[arg-type]
+        )
+
+        result = await coordinator.download()
+
+    assert result.status == DownloadStatus.COMPLETED
+    assert 0 in progress_display.update_values, (
+        "progress was not refreshed during a long wait for the next data buffer"
+    )
+    assert progress_display.progress_values[-1] == 100
 
 
 @pytest.mark.asyncio

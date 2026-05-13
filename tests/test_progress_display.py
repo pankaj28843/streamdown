@@ -8,8 +8,23 @@ from hypothesis import strategies as st
 from rich.cells import cell_len
 from rich.console import Console
 
-from streamdown.cli.progress_display import ProgressDisplay
+from streamdown.cli import progress_display
+from streamdown.cli.progress_display import DownloadTracker, ProgressDisplay
 from streamdown.domain.enums import DownloadStatus
+
+
+class FakeProgress:
+    """Small Progress test double that records update and refresh calls."""
+
+    def __init__(self) -> None:
+        self.update_calls: list[tuple[object, dict[str, object]]] = []
+        self.refresh_count = 0
+
+    def update(self, task_id, **kwargs) -> None:
+        self.update_calls.append((task_id, kwargs))
+
+    def refresh(self) -> None:
+        self.refresh_count += 1
 
 
 # Feature: streamdown, Property 36: Terminal width detection
@@ -66,6 +81,30 @@ def test_terminal_width_detection(terminal_width: int):
             assert is_narrow is False, (
                 f"Terminal with width {terminal_width} should not be considered narrow (>= 80)"
             )
+
+
+def test_update_progress_forces_refresh_on_five_second_cadence(monkeypatch):
+    """A visible refresh should be forced at most once per status interval."""
+    display = ProgressDisplay(quiet=False)
+    fake_progress = FakeProgress()
+    display.progress = fake_progress  # type: ignore[assignment]
+    display.downloads["https://example.com/file.bin"] = DownloadTracker(
+        url="https://example.com/file.bin",
+        filename="file.bin",
+        task_id=1,  # type: ignore[arg-type]
+        status=DownloadStatus.RUNNING,
+        total_bytes=100,
+        downloaded_bytes=0,
+        start_time=0.0,
+    )
+    times = iter([100.0, 104.0, 105.0])
+    monkeypatch.setattr(progress_display.time, "monotonic", lambda: next(times))
+
+    display.update_progress("https://example.com/file.bin", 10, 100)
+    display.update_progress("https://example.com/file.bin", 20, 100)
+    display.update_progress("https://example.com/file.bin", 30, 100)
+
+    assert fake_progress.refresh_count == 2
 
 
 def test_terminal_width_fallback_on_error():

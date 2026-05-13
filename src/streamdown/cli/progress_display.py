@@ -2,6 +2,7 @@
 
 import asyncio
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,7 @@ class DownloadTracker:
 _NARROW_TERMINAL_WIDTH = 80
 _NARROW_STATUS_WIDTH = len("downloading")
 _NARROW_META_WIDTH = len("100.0% 909TB")
+_FORCED_REFRESH_INTERVAL_SECONDS = 5.0
 _MIDDLE_ELLIPSIS = "…"
 
 
@@ -209,6 +211,7 @@ class ProgressDisplay:
         self._total_bytes_downloaded = 0
         self._start_time: float | None = None
         self._terminal_width: int = 80  # Default width, updated on each render
+        self._last_forced_refresh_time = 0.0
 
     def __enter__(self):
         """Enter context manager."""
@@ -246,8 +249,6 @@ class ProgressDisplay:
             self.progress.__enter__()
 
         # Use time.time() instead of event loop time since loop may not exist yet
-        import time
-
         self._start_time = time.time()
         return self
 
@@ -326,8 +327,6 @@ class ProgressDisplay:
             status_style="yellow",
             compact_size=compact_size,
         )
-
-        import time
 
         self.downloads[url] = DownloadTracker(
             url=url,
@@ -413,6 +412,8 @@ class ProgressDisplay:
                 compact_size=compact_size,
             )
 
+        self._refresh_if_due()
+
     def mark_complete(self, url: str, final_path: Path) -> None:
         """
         Mark a download as complete.
@@ -446,8 +447,6 @@ class ProgressDisplay:
         else:
             # Download failed before being added (e.g., HEAD request failed)
             # Create a minimal tracker for error reporting
-            import time
-
             # Extract filename from URL
             from urllib.parse import unquote, urlparse
 
@@ -467,6 +466,18 @@ class ProgressDisplay:
                 start_time=time.time(),
                 error_message=error,
             )
+
+    def _refresh_if_due(self) -> None:
+        """Force a visible refresh no more than once per status interval."""
+        if self.progress is None:
+            return
+
+        now = time.monotonic()
+        if now - self._last_forced_refresh_time < _FORCED_REFRESH_INTERVAL_SECONDS:
+            return
+
+        self.progress.refresh()
+        self._last_forced_refresh_time = now
 
     def _format_status(self, status: DownloadStatus) -> str:
         """
@@ -509,8 +520,6 @@ class ProgressDisplay:
         failed = sum(1 for d in self.downloads.values() if d.status == DownloadStatus.FAILED)
 
         # Calculate total throughput
-        import time
-
         if self._start_time is not None:
             elapsed = time.time() - self._start_time
             if elapsed > 0:
