@@ -83,6 +83,52 @@ def test_terminal_width_detection(terminal_width: int):
             )
 
 
+def test_progress_display_disables_rich_auto_refresh_thread_for_mobile_terminals():
+    """Rich Live auto-refresh thread should be disabled for a-Shell/iOS stability."""
+
+    class MockTerminalSize:
+        def __init__(self, columns, lines=24):
+            self.columns = columns
+            self.lines = lines
+
+    for width in (40, 100):
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+            mock_get_size.return_value = MockTerminalSize(width)
+            display = ProgressDisplay(quiet=False)
+            display.console = Console(
+                file=StringIO(),
+                width=width,
+                force_terminal=False,
+                color_system=None,
+            )
+            display.__enter__()
+            try:
+                assert display.progress is not None
+                assert display.progress.live.auto_refresh is False
+            finally:
+                display.__exit__(None, None, None)
+
+
+def test_update_status_refreshes_immediately_when_auto_refresh_is_disabled():
+    """Status changes should be visible without Rich's background refresh thread."""
+    display = ProgressDisplay(quiet=False)
+    fake_progress = FakeProgress()
+    display.progress = fake_progress  # type: ignore[assignment]
+    display.downloads["https://example.com/file.bin"] = DownloadTracker(
+        url="https://example.com/file.bin",
+        filename="file.bin",
+        task_id=1,  # type: ignore[arg-type]
+        status=DownloadStatus.PENDING,
+        total_bytes=100,
+        downloaded_bytes=0,
+        start_time=0.0,
+    )
+
+    display.update_status("https://example.com/file.bin", DownloadStatus.RUNNING)
+
+    assert fake_progress.refresh_count == 1
+
+
 def test_update_progress_forces_refresh_on_five_second_cadence(monkeypatch):
     """A visible refresh should be forced at most once per status interval."""
     display = ProgressDisplay(quiet=False)

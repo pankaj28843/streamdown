@@ -164,7 +164,7 @@ class _NarrowProgress(Progress):
 
     def __init__(self, *, console: Console, width_getter: Callable[[], int]):
         self._width_getter = width_getter
-        super().__init__(console=console, expand=True)
+        super().__init__(console=console, expand=True, auto_refresh=False)
 
     def _current_width(self) -> int:
         try:
@@ -245,6 +245,7 @@ class ProgressDisplay:
                     TextColumn("[bold]{task.fields[status]}"),
                     console=self.console,
                     expand=False,  # Don't expand to prevent wrapping
+                    auto_refresh=False,
                 )
             self.progress.__enter__()
 
@@ -327,6 +328,7 @@ class ProgressDisplay:
             status_style="yellow",
             compact_size=compact_size,
         )
+        self._force_refresh()
 
         self.downloads[url] = DownloadTracker(
             url=url,
@@ -367,6 +369,7 @@ class ProgressDisplay:
             status_plain=status_plain,
             status_style=status_style,
         )
+        self._force_refresh()
 
     def update_progress(
         self,
@@ -467,6 +470,14 @@ class ProgressDisplay:
                 error_message=error,
             )
 
+    def _force_refresh(self, now: float | None = None) -> None:
+        """Refresh the display immediately without Rich's background thread."""
+        if self.progress is None:
+            return
+
+        self.progress.refresh()
+        self._last_forced_refresh_time = time.monotonic() if now is None else now
+
     def _refresh_if_due(self) -> None:
         """Force a visible refresh no more than once per status interval."""
         if self.progress is None:
@@ -476,8 +487,7 @@ class ProgressDisplay:
         if now - self._last_forced_refresh_time < _FORCED_REFRESH_INTERVAL_SECONDS:
             return
 
-        self.progress.refresh()
-        self._last_forced_refresh_time = now
+        self._force_refresh(now)
 
     def _format_status(self, status: DownloadStatus) -> str:
         """

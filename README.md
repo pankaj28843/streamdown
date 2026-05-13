@@ -79,14 +79,21 @@ pip install streamdown
 
 ### Latest `main` from GitHub zip archive
 
-For a clean reinstall in a-Shell and similar iOS terminal apps, install directly from the `main` branch zip archive:
+For a clean reinstall in a-Shell and similar iOS terminal apps, install directly from the `main` branch zip archive. Run these commands one at a time; avoid pasting them as one wrapped line.
 
 ```bash
 python3 -m pip uninstall -y streamdown
-python3 -m pip install --upgrade --no-cache-dir \
-  "https://github.com/pankaj28843/streamdown/archive/refs/heads/main.zip"
+```
+
+```bash
+python3 -m pip install --user --upgrade --no-cache-dir --progress-bar off "https://github.com/pankaj28843/streamdown/archive/refs/heads/main.zip"
+```
+
+```bash
 python3 -m streamdown --help
 ```
+
+`--progress-bar off` avoids pip's Rich/live progress renderer, which can be unstable in some iOS terminal environments.
 
 If your shell exposes pip-installed scripts on `PATH`, this should also work after install:
 
