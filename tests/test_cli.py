@@ -1,9 +1,11 @@
 """Unit tests for CLI default values and argument parsing."""
 
+from io import StringIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from streamdown.cli.main import app, parse_piece_size
@@ -318,7 +320,8 @@ class TestOptionValidation:
         result = runner.invoke(
             app,
             [
-                "-o", "output.zip",
+                "-o",
+                "output.zip",
                 "https://example.com/file1.zip",
                 "https://example.com/file2.zip",
             ],
@@ -334,8 +337,10 @@ class TestOptionValidation:
         result = runner.invoke(
             app,
             [
-                "-s", "4",
-                "-x", "8",
+                "-s",
+                "4",
+                "-x",
+                "8",
                 "https://example.com/file.zip",
             ],
         )
@@ -349,7 +354,8 @@ class TestOptionValidation:
         result = runner.invoke(
             app,
             [
-                "-k", "invalid",
+                "-k",
+                "invalid",
                 "https://example.com/file.zip",
             ],
         )
@@ -363,7 +369,8 @@ class TestOptionValidation:
         result = runner.invoke(
             app,
             [
-                "--streaming-mode", "invalid",
+                "--streaming-mode",
+                "invalid",
                 "https://example.com/file.zip",
             ],
         )
@@ -377,7 +384,8 @@ class TestOptionValidation:
         result = runner.invoke(
             app,
             [
-                "--log-level", "invalid",
+                "--log-level",
+                "invalid",
                 "https://example.com/file.zip",
             ],
         )
@@ -424,13 +432,20 @@ class TestE2ECliTests:
         result = runner.invoke(
             app,
             [
-                "-d", "/tmp/downloads",
-                "-s", "16",
-                "-k", "2M",
-                "--streaming-mode", "inorder",
-                "-j", "2",
-                "--max-tries", "3",
-                "--retry-wait", "1.5",
+                "-d",
+                "/tmp/downloads",
+                "-s",
+                "16",
+                "-k",
+                "2M",
+                "--streaming-mode",
+                "inorder",
+                "-j",
+                "2",
+                "--max-tries",
+                "3",
+                "--retry-wait",
+                "1.5",
                 "https://example.com/file.zip",
             ],
         )
@@ -499,7 +514,8 @@ class TestE2ECliTests:
         result = runner.invoke(
             app,
             [
-                "-j", "2",
+                "-j",
+                "2",
                 "https://example.com/file1.zip",
                 "https://example.com/file2.zip",
                 "https://example.com/file3.zip",
@@ -611,7 +627,8 @@ class TestE2ECliTests:
         result = runner.invoke(
             app,
             [
-                "-o", "output.zip",
+                "-o",
+                "output.zip",
                 "https://example.com/file1.zip",
                 "https://example.com/file2.zip",
             ],
@@ -630,8 +647,10 @@ class TestE2ECliTests:
         result = runner.invoke(
             app,
             [
-                "-s", "4",
-                "-x", "8",
+                "-s",
+                "4",
+                "-x",
+                "8",
                 "https://example.com/file.zip",
             ],
         )
@@ -1076,28 +1095,28 @@ class TestNarrowTerminalScenarios:
             # Test narrow terminal (60 columns)
             mock_get_size.return_value = MockTerminalSize(60)
             display = ProgressDisplay(quiet=True)
-            
+
             assert display.get_terminal_width() == 60
             assert display.is_narrow_terminal() is True
 
             # Test wide terminal (120 columns)
             mock_get_size.return_value = MockTerminalSize(120)
             display = ProgressDisplay(quiet=True)
-            
+
             assert display.get_terminal_width() == 120
             assert display.is_narrow_terminal() is False
 
             # Test boundary at 80 columns
             mock_get_size.return_value = MockTerminalSize(80)
             display = ProgressDisplay(quiet=True)
-            
+
             assert display.get_terminal_width() == 80
             assert display.is_narrow_terminal() is False
 
             # Test just below boundary (79 columns)
             mock_get_size.return_value = MockTerminalSize(79)
             display = ProgressDisplay(quiet=True)
-            
+
             assert display.get_terminal_width() == 79
             assert display.is_narrow_terminal() is True
 
@@ -1138,7 +1157,7 @@ class TestNarrowTerminalScenarios:
         # Long filename should be truncated with extension preserved
         long_name = "Writing.With.Fire.2021.1080p.WEBRip.x264.AAC-[YTS.MX].mp4"
         result = display.format_filename(long_name, 30)
-        
+
         assert len(result) <= 30
         assert "..." in result
         assert result.endswith("YTS.MX].mp4")  # Last 15 chars preserved
@@ -1161,13 +1180,13 @@ class TestNarrowTerminalScenarios:
         # Test various max widths
         for max_width in [20, 30, 40, 50, 60]:
             result = display.format_filename(long_filename, max_width)
-            
+
             # Result should not exceed max_width (or minimum of 20)
             effective_max = max(max_width, 20)
             assert len(result) <= effective_max, (
                 f"Filename '{result}' (length {len(result)}) exceeds max_width {effective_max}"
             )
-            
+
             # If truncation occurred, should have ellipsis
             if len(long_filename) > max_width:
                 assert "..." in result
@@ -1193,9 +1212,9 @@ class TestNarrowTerminalScenarios:
             ("e" * 100 + ".mkv", 30, ".mkv"),
         ]
 
-        for filename, max_width, expected_ext in test_cases:
+        for filename, max_width, _expected_ext in test_cases:
             result = display.format_filename(filename, max_width)
-            
+
             # Should preserve last 15 characters (which includes extension)
             assert result.endswith(filename[-15:]), (
                 f"Expected '{result}' to end with '{filename[-15:]}'"
@@ -1245,17 +1264,50 @@ class TestNarrowTerminalScenarios:
 
             # Test narrow terminal (60 columns)
             mock_get_size.return_value = MockTerminalSize(60)
-            
+
             display = ProgressDisplay(quiet=False)
-            
+
             # Verify narrow terminal is detected
             assert display.is_narrow_terminal() is True
-            
+
             # Verify bar width is appropriate for narrow terminal (10-20 chars)
             bar_width = display.calculate_bar_width()
             assert 10 <= bar_width <= 20, (
                 f"Bar width {bar_width} should be between 10-20 for narrow terminal"
             )
+
+    def test_progress_display_narrow_context_smoke(self):
+        """
+        Test that narrow progress display construction can add/update/exit.
+        """
+        from streamdown.cli.progress_display import ProgressDisplay
+
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+
+            class MockTerminalSize:
+                def __init__(self, columns, lines=24):
+                    self.columns = columns
+                    self.lines = lines
+
+            mock_get_size.return_value = MockTerminalSize(40)
+            display = ProgressDisplay(quiet=False)
+            display.console = Console(
+                width=40,
+                record=True,
+                force_terminal=False,
+                color_system=None,
+                file=StringIO(),
+            )
+
+            with display:
+                url = "https://example.test/file.zip"
+                display.add_download(url, "very-long-file-name-for-narrow-display.zip", 100)
+                display.update_status(url, DownloadStatus.RUNNING)
+                display.update_progress(url, 50, 100)
+                display.mark_complete(url, Path("file.zip"))
+
+            assert url in display.downloads
+            assert display.downloads[url].status == DownloadStatus.COMPLETED
 
     def test_progress_display_on_wide_terminal(self):
         """
@@ -1274,12 +1326,12 @@ class TestNarrowTerminalScenarios:
 
             # Test wide terminal (120 columns)
             mock_get_size.return_value = MockTerminalSize(120)
-            
+
             display = ProgressDisplay(quiet=False)
-            
+
             # Verify wide terminal is detected
             assert display.is_narrow_terminal() is False
-            
+
             # Verify bar width is appropriate for wide terminal (40-60 chars)
             bar_width = display.calculate_bar_width()
             assert 40 <= bar_width <= 60, (
@@ -1347,9 +1399,7 @@ class TestNarrowTerminalScenarios:
 
         for size in test_sizes:
             result = display.format_size_compact(size)
-            assert " " not in result, (
-                f"Compact size '{result}' should not contain spaces"
-            )
+            assert " " not in result, f"Compact size '{result}' should not contain spaces"
 
     def test_terminal_width_at_various_sizes(self):
         """
@@ -1373,12 +1423,10 @@ class TestNarrowTerminalScenarios:
             for width in test_widths:
                 mock_get_size.return_value = MockTerminalSize(width)
                 display = ProgressDisplay(quiet=True)
-                
+
                 detected_width = display.get_terminal_width()
-                assert detected_width == width, (
-                    f"Expected width {width}, got {detected_width}"
-                )
-                
+                assert detected_width == width, f"Expected width {width}, got {detected_width}"
+
                 # Verify narrow detection
                 is_narrow = display.is_narrow_terminal()
                 expected_narrow = width < 80
@@ -1405,10 +1453,10 @@ class TestNarrowTerminalScenarios:
 
             # Test bar width at various terminal widths
             test_cases = [
-                (40, 10),   # Very narrow -> minimum bar width
-                (60, 15),   # Narrow -> scaled bar width
-                (79, 19),   # Just below threshold -> max narrow bar
-                (80, 40),   # At threshold -> min wide bar
+                (40, 10),  # Very narrow -> minimum bar width
+                (60, 15),  # Narrow -> scaled bar width
+                (79, 19),  # Just below threshold -> max narrow bar
+                (80, 40),  # At threshold -> min wide bar
                 (120, 50),  # Wide -> scaled bar width
                 (200, 60),  # Very wide -> max bar width
             ]
@@ -1416,7 +1464,7 @@ class TestNarrowTerminalScenarios:
             for terminal_width, expected_bar_width in test_cases:
                 mock_get_size.return_value = MockTerminalSize(terminal_width)
                 display = ProgressDisplay(quiet=True)
-                
+
                 bar_width = display.calculate_bar_width()
                 assert bar_width == expected_bar_width, (
                     f"For terminal width {terminal_width}, expected bar width "
@@ -1442,7 +1490,7 @@ class TestNarrowTerminalScenarios:
             for width in [20, 30, 35, 40]:
                 mock_get_size.return_value = MockTerminalSize(width)
                 display = ProgressDisplay(quiet=True)
-                
+
                 bar_width = display.calculate_bar_width()
                 assert bar_width >= 10, (
                     f"Bar width {bar_width} is below minimum of 10 for terminal width {width}"
@@ -1467,7 +1515,7 @@ class TestNarrowTerminalScenarios:
             for width in [200, 250, 300]:
                 mock_get_size.return_value = MockTerminalSize(width)
                 display = ProgressDisplay(quiet=True)
-                
+
                 bar_width = display.calculate_bar_width()
                 assert bar_width <= 60, (
                     f"Bar width {bar_width} exceeds maximum of 60 for terminal width {width}"

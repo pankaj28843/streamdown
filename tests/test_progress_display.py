@@ -1,11 +1,15 @@
 """Property-based tests for ProgressDisplay terminal width detection."""
 
+from io import StringIO
 from unittest.mock import patch
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from rich.cells import cell_len
+from rich.console import Console
 
 from streamdown.cli.progress_display import ProgressDisplay
+from streamdown.domain.enums import DownloadStatus
 
 
 # Feature: streamdown, Property 36: Terminal width detection
@@ -111,6 +115,7 @@ def test_narrow_terminal_boundary_conditions():
     Specifically tests widths around the 80-column threshold.
     """
     with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+
         class MockTerminalSize:
             def __init__(self, columns, lines=24):
                 self.columns = columns
@@ -176,15 +181,12 @@ def test_filename_truncation_preserves_extension(filename: str, max_width: int):
     # Property 2: If filename is short enough, it should be unchanged
     if len(filename) <= max_width:
         assert formatted == filename, (
-            f"Short filename should not be modified: expected '{filename}', "
-            f"got '{formatted}'"
+            f"Short filename should not be modified: expected '{filename}', got '{formatted}'"
         )
     else:
         # Property 3: If truncation occurred, check for ellipsis
         if len(filename) > effective_max_width:
-            assert "..." in formatted, (
-                f"Truncated filename should contain ellipsis: '{formatted}'"
-            )
+            assert "..." in formatted, f"Truncated filename should contain ellipsis: '{formatted}'"
 
             # Property 4: Extension preservation (last 15 chars)
             # The last 15 characters of the original filename should appear
@@ -337,7 +339,6 @@ def test_progress_bar_scales_with_terminal_width(terminal_width: int):
         # For wide terminals: as width increases from 80 to 160+, bar goes from 40 to 60
         if 40 <= terminal_width < 80:
             # Narrow terminal scaling
-            expected_min = 10
             expected_max = 10 + int((terminal_width - 40) * 0.25)
             expected_max = max(expected_max, 10)  # Ensure minimum
             assert bar_width == expected_max, (
@@ -355,8 +356,7 @@ def test_progress_bar_scales_with_terminal_width(terminal_width: int):
 
         # Property 4: Bar width never exceeds 60 chars (maximum bound)
         assert bar_width <= 60, (
-            f"Bar width {bar_width} exceeds maximum of 60 chars "
-            f"for terminal width {terminal_width}"
+            f"Bar width {bar_width} exceeds maximum of 60 chars for terminal width {terminal_width}"
         )
 
 
@@ -365,6 +365,7 @@ def test_calculate_bar_width_examples():
     Test specific examples of bar width calculation to verify expected behavior.
     """
     with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+
         class MockTerminalSize:
             def __init__(self, columns, lines=24):
                 self.columns = columns
@@ -406,6 +407,7 @@ def test_calculate_bar_width_boundary_conditions():
     Test boundary conditions for bar width calculation.
     """
     with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_get_size:
+
         class MockTerminalSize:
             def __init__(self, columns, lines=24):
                 self.columns = columns
@@ -430,6 +432,202 @@ def test_calculate_bar_width_boundary_conditions():
         bar_width = display.calculate_bar_width()
         assert 40 <= bar_width <= 60
         assert bar_width == 40  # 40 + (81-80)*0.25 = 40 + 0.25 = 40 (int)
+
+
+class MockTerminalSize:
+    """Small stand-in for shutil terminal size results."""
+
+    def __init__(self, columns: int, lines: int = 24):
+        self.columns = columns
+        self.lines = lines
+
+
+def make_recording_console(width: int) -> Console:
+    """Create a deterministic Rich console for progress render tests."""
+    return Console(
+        width=width,
+        record=True,
+        force_terminal=False,
+        color_system=None,
+        file=StringIO(),
+    )
+
+
+def render_progress_lines(display: ProgressDisplay, width: int) -> list[str]:
+    """Render the current progress display and return non-empty text lines."""
+    assert display.progress is not None
+    console = make_recording_console(width)
+    console.print(display.progress.get_renderable())
+    text = console.export_text(styles=False)
+    return [line.rstrip() for line in text.splitlines() if line.strip()]
+
+
+def assert_lines_fit_width(lines: list[str], width: int) -> None:
+    """Assert rendered lines do not exceed a terminal width in visible cells."""
+    for line in lines:
+        assert cell_len(line) <= width, (
+            f"Rendered line exceeds width {width}: {cell_len(line)} cells in {line!r}"
+        )
+
+
+def test_narrow_progress_render_uses_multi_row_blocks_without_wrapping():
+    """
+    Active narrow-terminal downloads render as stable multi-row blocks.
+
+    This covers the acceptance target at 40, 60, and 79 columns: no rendered
+    line should exceed the terminal width, and the layout should no longer be a
+    crowded single row.
+    """
+    url = "https://example.test/movie.mkv"
+    filename = "A.Very.Long.Movie.Title.2024.1080p.BluRay.x265.HEVC.10bit.AAC-[GROUP].mkv"
+    total_bytes = 100_000_000
+    downloaded_bytes = 42_000_000
+
+    for width in [40, 60, 79]:
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+            mock_size.return_value = MockTerminalSize(width)
+            display = ProgressDisplay(quiet=False)
+            display.console = make_recording_console(width)
+            display.__enter__()
+            try:
+                display.add_download(url, filename, total_bytes)
+                display.update_status(url, DownloadStatus.RUNNING)
+                display.update_progress(url, downloaded_bytes, total_bytes)
+
+                lines = render_progress_lines(display, width)
+
+                assert len(lines) == 2
+                assert_lines_fit_width(lines, width)
+                rendered_text = "\n".join(lines)
+                assert "A." in rendered_text
+                assert ".mkv" in rendered_text
+                assert "42.0%" in rendered_text
+                assert "40MB" in rendered_text
+                assert "downloading" in rendered_text
+            finally:
+                if display.progress is not None:
+                    display.progress.__exit__(None, None, None)
+
+
+def test_narrow_progress_row_count_stays_stable_across_status_transitions():
+    """
+    Narrow progress blocks keep the same row count as status labels change.
+    """
+    url = "https://example.test/archive.zip"
+    filename = "Very.Long.Release.Name.With.Many.Parts.And.Metadata-[TEAM].zip"
+    total_bytes = 10_000_000
+
+    with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+        mock_size.return_value = MockTerminalSize(40)
+        display = ProgressDisplay(quiet=False)
+        display.console = make_recording_console(40)
+        display.__enter__()
+        try:
+            display.add_download(url, filename, total_bytes)
+            snapshots: list[list[str]] = []
+
+            snapshots.append(render_progress_lines(display, 40))
+            display.update_status(url, DownloadStatus.RUNNING)
+            display.update_progress(url, 5_000_000, total_bytes)
+            snapshots.append(render_progress_lines(display, 40))
+            display.update_status(url, DownloadStatus.COMPLETED)
+            display.update_progress(url, total_bytes, total_bytes)
+            snapshots.append(render_progress_lines(display, 40))
+            display.update_status(url, DownloadStatus.FAILED)
+            snapshots.append(render_progress_lines(display, 40))
+
+            row_counts = {len(lines) for lines in snapshots}
+            assert row_counts == {2}
+            for lines in snapshots:
+                assert_lines_fit_width(lines, 40)
+        finally:
+            if display.progress is not None:
+                display.progress.__exit__(None, None, None)
+
+
+def test_narrow_progress_render_handles_multiple_concurrent_downloads():
+    """Multiple narrow-mode downloads render as deterministic two-row blocks."""
+    downloads = [
+        (
+            "https://example.test/movie.mkv",
+            "A.Very.Long.Movie.Title.2024.1080p.BluRay.x265.HEVC.10bit.AAC-[GROUP].mkv",
+            100_000_000,
+            25_000_000,
+            ".mkv",
+        ),
+        (
+            "https://example.test/source.tar.gz",
+            "streamdown-source-package-with-a-very-long-release-name-v1.2.3.tar.gz",
+            80_000_000,
+            40_000_000,
+            ".tar.gz",
+        ),
+        (
+            "https://example.test/archive.zip",
+            "Very.Long.Release.Name.With.Many.Parts.And.Metadata-[TEAM].zip",
+            50_000_000,
+            45_000_000,
+            ".zip",
+        ),
+    ]
+
+    for width in [40, 60]:
+        with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+            mock_size.return_value = MockTerminalSize(width)
+            display = ProgressDisplay(quiet=False)
+            display.console = make_recording_console(width)
+            display.__enter__()
+            try:
+                for url, filename, total_bytes, downloaded_bytes, _suffix in downloads:
+                    display.add_download(url, filename, total_bytes)
+                    display.update_status(url, DownloadStatus.RUNNING)
+                    display.update_progress(url, downloaded_bytes, total_bytes)
+
+                lines = render_progress_lines(display, width)
+
+                assert len(lines) == len(downloads) * 2
+                assert_lines_fit_width(lines, width)
+                rendered_text = "\n".join(lines)
+                assert rendered_text.count("downloading") == len(downloads)
+                assert rendered_text.count("%") == len(downloads)
+                for *_download_fields, suffix in downloads:
+                    assert suffix in rendered_text
+            finally:
+                if display.progress is not None:
+                    display.progress.__exit__(None, None, None)
+
+
+def test_narrow_progress_render_uses_current_width_after_resize():
+    """Narrow progress rendering recalculates layout after terminal resize."""
+    url = "https://example.test/movie.mkv"
+    filename = "A.Very.Long.Movie.Title.2024.1080p.BluRay.x265.HEVC.10bit.AAC-[GROUP].mkv"
+    total_bytes = 100_000_000
+
+    with patch("streamdown.cli.progress_display.shutil.get_terminal_size") as mock_size:
+        mock_size.return_value = MockTerminalSize(79)
+        display = ProgressDisplay(quiet=False)
+        display.console = make_recording_console(79)
+        display.__enter__()
+        try:
+            display.add_download(url, filename, total_bytes)
+            display.update_status(url, DownloadStatus.RUNNING)
+            display.update_progress(url, 42_000_000, total_bytes)
+
+            wide_narrow_lines = render_progress_lines(display, 79)
+            assert len(wide_narrow_lines) == 2
+            assert_lines_fit_width(wide_narrow_lines, 79)
+
+            mock_size.return_value = MockTerminalSize(40)
+            resized_lines = render_progress_lines(display, 40)
+
+            assert len(resized_lines) == 2
+            assert_lines_fit_width(resized_lines, 40)
+            resized_text = "\n".join(resized_lines)
+            assert ".mkv" in resized_text
+            assert "downloading" in resized_text
+        finally:
+            if display.progress is not None:
+                display.progress.__exit__(None, None, None)
 
 
 # Feature: streamdown, Property 38: Essential information prioritized on narrow terminals
@@ -472,9 +670,7 @@ def test_essential_information_prioritized_on_narrow_terminals(
         compact_size = display.format_size_compact(downloaded_bytes)
 
         # Property 1: Compact size must not contain spaces
-        assert " " not in compact_size, (
-            f"Compact size '{compact_size}' should not contain spaces"
-        )
+        assert " " not in compact_size, f"Compact size '{compact_size}' should not contain spaces"
 
         # Property 2: Compact size must use standard units
         valid_units = ["B", "KB", "MB", "GB", "TB"]
@@ -504,9 +700,11 @@ def test_essential_information_prioritized_on_narrow_terminals(
                             f"For values < 10, compact size should have at most 1 decimal: "
                             f"'{compact_size}' has {decimal_places} decimal places"
                         )
-            except ValueError:
+            except ValueError as exc:
                 # If we can't parse it, that's a problem
-                assert False, f"Could not parse numeric part of compact size: '{compact_size}'"
+                raise AssertionError(
+                    f"Could not parse numeric part of compact size: '{compact_size}'"
+                ) from exc
 
         # Property 4: Verify terminal width detection affects display mode
         is_narrow = display.is_narrow_terminal()
@@ -674,7 +872,7 @@ def test_url_display_prevents_wrapping(url: str, terminal_width: int):
         # Calculate max width for URL display
         # On narrow terminals, we need to be more conservative with space
         is_narrow = display.is_narrow_terminal()
-        
+
         if is_narrow:
             # On narrow terminals, allocate less space for URLs
             # Reserve space for essential info, use remaining for URL
@@ -695,8 +893,7 @@ def test_url_display_prevents_wrapping(url: str, terminal_width: int):
         # Property 2: If URL is short enough, it should be unchanged
         if len(url) <= max_url_width:
             assert formatted_url == url, (
-                f"Short URL should not be modified: expected '{url}', "
-                f"got '{formatted_url}'"
+                f"Short URL should not be modified: expected '{url}', got '{formatted_url}'"
             )
         else:
             # Property 3: If truncation occurred, check for ellipsis

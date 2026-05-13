@@ -2,20 +2,25 @@
 
 import asyncio
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from rich.console import Console
+from rich.cells import cell_len, get_character_cell_size
+from rich.console import Console, Group
 from rich.progress import (
     BarColumn,
     DownloadColumn,
     Progress,
+    Task,
     TaskID,
     TextColumn,
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
-from rich.table import Table
+from rich.progress_bar import ProgressBar
+from rich.table import Column, Table
+from rich.text import Text
 
 from streamdown.domain.enums import DownloadStatus
 
@@ -32,6 +37,147 @@ class DownloadTracker:
     downloaded_bytes: int
     start_time: float
     error_message: str | None = None
+
+
+_NARROW_TERMINAL_WIDTH = 80
+_NARROW_STATUS_WIDTH = len("downloading")
+_NARROW_META_WIDTH = len("100.0% 909TB")
+_MIDDLE_ELLIPSIS = "…"
+
+
+def _take_cell_prefix(text: str, max_cells: int) -> str:
+    """Return a prefix that fits within max_cells terminal cells."""
+    if max_cells <= 0:
+        return ""
+
+    cells = 0
+    chars: list[str] = []
+    for char in text:
+        char_cells = get_character_cell_size(char)
+        if cells + char_cells > max_cells:
+            break
+        chars.append(char)
+        cells += char_cells
+    return "".join(chars)
+
+
+def _take_cell_suffix(text: str, max_cells: int) -> str:
+    """Return a suffix that fits within max_cells terminal cells."""
+    if max_cells <= 0:
+        return ""
+
+    cells = 0
+    chars: list[str] = []
+    for char in reversed(text):
+        char_cells = get_character_cell_size(char)
+        if cells + char_cells > max_cells:
+            break
+        chars.append(char)
+        cells += char_cells
+    return "".join(reversed(chars))
+
+
+def _truncate_middle_cells(text: str, max_cells: int) -> str:
+    """Truncate text to max_cells, preserving useful prefix and suffix cells."""
+    if max_cells <= 0:
+        return ""
+    if cell_len(text) <= max_cells:
+        return text
+    if max_cells <= cell_len(_MIDDLE_ELLIPSIS) + 2:
+        return _take_cell_prefix(text, max_cells)
+
+    ellipsis_width = cell_len(_MIDDLE_ELLIPSIS)
+    suffix_width = min(15, max(4, max_cells // 2))
+    prefix_width = max_cells - ellipsis_width - suffix_width
+    if prefix_width < 1:
+        prefix_width = 1
+        suffix_width = max_cells - ellipsis_width - prefix_width
+
+    prefix = _take_cell_prefix(text, prefix_width)
+    suffix = _take_cell_suffix(text, suffix_width)
+    return f"{prefix}{_MIDDLE_ELLIPSIS}{suffix}"
+
+
+def _task_field(task: Task, name: str, default: str = "") -> str:
+    """Read a Rich task field as a string."""
+    value = task.fields.get(name, default)
+    return default if value is None else str(value)
+
+
+def _render_narrow_task_header(task: Task, terminal_width: int) -> Table:
+    """Render the filename/status row for one narrow progress task."""
+    status_plain = _task_field(task, "status_plain", "HEAD")
+    status_style = _task_field(task, "status_style", "yellow")
+    status_width = min(_NARROW_STATUS_WIDTH, max(4, terminal_width // 3))
+    filename_width = max(1, terminal_width - status_width - 2)
+    filename = (
+        _task_field(task, "original_filename")
+        or _task_field(task, "filename")
+        or str(task.description)
+    )
+    display_filename = _truncate_middle_cells(filename, filename_width)
+
+    header = Table.grid(
+        Column(ratio=1, no_wrap=True, overflow="ellipsis"),
+        Column(width=status_width, no_wrap=True, overflow="ellipsis", justify="right"),
+        padding=(0, 1),
+        expand=True,
+    )
+    header.add_row(
+        Text(display_filename, style="bold blue", no_wrap=True, overflow="ellipsis"),
+        Text(status_plain, style=f"bold {status_style}", justify="right", no_wrap=True),
+    )
+    return header
+
+
+def _render_narrow_task_bar(task: Task, terminal_width: int) -> Table:
+    """Render the progress bar/metadata row for one narrow progress task."""
+    compact_size = _task_field(task, "compact_size", "0B")
+    metadata = f"{task.percentage:>5.1f}% {compact_size}"
+    metadata_width = min(_NARROW_META_WIDTH, max(8, terminal_width // 2))
+
+    bar_row = Table.grid(
+        Column(ratio=1, no_wrap=True, overflow="crop"),
+        Column(width=metadata_width, no_wrap=True, overflow="ellipsis", justify="right"),
+        padding=(0, 1),
+        expand=True,
+    )
+    bar_row.add_row(
+        ProgressBar(total=task.total, completed=task.completed, width=None),
+        Text(metadata, justify="right", no_wrap=True, overflow="ellipsis"),
+    )
+    return bar_row
+
+
+def _render_narrow_task(task: Task, terminal_width: int) -> Group:
+    """Render one task as a two-row narrow-terminal block."""
+    return Group(
+        _render_narrow_task_header(task, terminal_width),
+        _render_narrow_task_bar(task, terminal_width),
+    )
+
+
+class _NarrowProgress(Progress):
+    """Progress renderer that gives each task a compact multi-row block."""
+
+    def __init__(self, *, console: Console, width_getter: Callable[[], int]):
+        self._width_getter = width_getter
+        super().__init__(console=console, expand=True)
+
+    def _current_width(self) -> int:
+        try:
+            return max(1, int(self._width_getter()))
+        except (TypeError, ValueError, OSError):
+            return max(1, int(self.console.size.width))
+
+    def get_renderables(self):
+        """Yield narrow multi-row task blocks instead of one task table."""
+        terminal_width = self._current_width()
+        visible_tasks = [task for task in self.tasks if task.visible]
+        for index, task in enumerate(visible_tasks):
+            if index > 0:
+                yield Text("")
+            yield _render_narrow_task(task, terminal_width)
 
 
 class ProgressDisplay:
@@ -72,23 +218,13 @@ class ProgressDisplay:
             # Requirement 16.3: Prioritize essential information on narrow terminals
             bar_width = self.calculate_bar_width()
             is_narrow = self.is_narrow_terminal()
-            terminal_width = self.get_terminal_width()
-            
+
             if is_narrow:
-                # Narrow terminal: Essential info only
-                # Essential: filename (truncated), percentage, status
-                # Important: downloaded amount, progress bar
-                # Omit: total size, ETA, detailed speed
-                self.progress = Progress(
-                    TextColumn("[bold blue]{task.fields[filename]}", justify="left"),
-                    BarColumn(bar_width=bar_width),
-                    "[progress.percentage]{task.percentage:>3.1f}%",
-                    "•",
-                    TextColumn("{task.fields[compact_size]}"),
-                    "•",
-                    TextColumn("[bold]{task.fields[status]}"),
+                # Narrow terminal: each task renders as a compact two-row block.
+                # This avoids Rich's default single-row table folding/cropping.
+                self.progress = _NarrowProgress(
                     console=self.console,
-                    expand=False,  # Don't expand to prevent wrapping
+                    width_getter=self.get_terminal_width,
                 )
             else:
                 # Wide terminal: Full display
@@ -111,6 +247,7 @@ class ProgressDisplay:
 
         # Use time.time() instead of event loop time since loop may not exist yet
         import time
+
         self._start_time = time.time()
         return self
 
@@ -149,11 +286,11 @@ class ProgressDisplay:
         # Requirement 16.3: Include compact size for narrow terminals
         # Requirement 16.2: Truncate long filenames for narrow terminals
         compact_size = self.format_size_compact(0)  # Start with 0 bytes downloaded
-        
+
         # Truncate filename if on narrow terminal
         display_filename = filename
         terminal_width = self.get_terminal_width()
-        
+
         if self.is_narrow_terminal():
             # On narrow terminals, allocate reasonable space for filename
             # Calculate based on actual space used:
@@ -166,7 +303,9 @@ class ProgressDisplay:
             # Total other elements: bar + 1 + 7 + 3 + 6 + 3 + 12 = bar + 32
             bar_width = self.calculate_bar_width()
             other_elements_width = bar_width + 1 + 32
-            max_filename_width = max(20, terminal_width - other_elements_width - 2)  # -2 for safety margin
+            max_filename_width = max(
+                20, terminal_width - other_elements_width - 2
+            )  # -2 for safety margin
             display_filename = self.format_filename(filename, max_filename_width)
         else:
             # On wide terminals, also truncate but with more generous limit
@@ -176,16 +315,20 @@ class ProgressDisplay:
             max_filename_width = max(40, terminal_width - other_elements_width)
             if len(filename) > max_filename_width:
                 display_filename = self.format_filename(filename, max_filename_width)
-        
+
         task_id = self.progress.add_task(
             description=display_filename,
             total=total_bytes,
             filename=display_filename,
+            original_filename=filename,
             status="HEAD",
+            status_plain="HEAD",
+            status_style="yellow",
             compact_size=compact_size,
         )
 
         import time
+
         self.downloads[url] = DownloadTracker(
             url=url,
             filename=filename,  # Store original filename
@@ -215,12 +358,15 @@ class ProgressDisplay:
 
         tracker.status = status
 
-        # Map status to display string
+        # Map status to display strings
         status_str = self._format_status(status)
+        status_plain, status_style = self._format_status_parts(status)
 
         self.progress.update(
             tracker.task_id,
             status=status_str,
+            status_plain=status_plain,
+            status_style=status_style,
         )
 
     def update_progress(
@@ -301,14 +447,15 @@ class ProgressDisplay:
             # Download failed before being added (e.g., HEAD request failed)
             # Create a minimal tracker for error reporting
             import time
-            
+
             # Extract filename from URL
             from urllib.parse import unquote, urlparse
+
             parsed = urlparse(url)
             filename = unquote(parsed.path.split("/")[-1])
             if not filename:
                 filename = "download"
-            
+
             # Create tracker without adding to progress bar
             self.downloads[url] = DownloadTracker(
                 url=url,
@@ -331,14 +478,21 @@ class ProgressDisplay:
         Returns:
             Formatted status string with color
         """
+        status_plain, status_style = self._format_status_parts(status)
+        if status_style:
+            return f"[{status_style}]{status_plain}[/{status_style}]"
+        return status_plain
+
+    def _format_status_parts(self, status: DownloadStatus) -> tuple[str, str]:
+        """Return plain text and Rich style for a download status."""
         status_map = {
-            DownloadStatus.PENDING: "[yellow]HEAD[/yellow]",
-            DownloadStatus.RUNNING: "[cyan]downloading[/cyan]",
-            DownloadStatus.COMPLETED: "[green]complete[/green]",
-            DownloadStatus.FAILED: "[red]failed[/red]",
-            DownloadStatus.CANCELLED: "[red]cancelled[/red]",
+            DownloadStatus.PENDING: ("HEAD", "yellow"),
+            DownloadStatus.RUNNING: ("downloading", "cyan"),
+            DownloadStatus.COMPLETED: ("complete", "green"),
+            DownloadStatus.FAILED: ("failed", "red"),
+            DownloadStatus.CANCELLED: ("cancelled", "red"),
         }
-        return status_map.get(status, str(status))
+        return status_map.get(status, (str(status), ""))
 
     def _display_summary(self) -> None:
         """
@@ -351,17 +505,12 @@ class ProgressDisplay:
 
         # Calculate statistics
         total_downloads = len(self.downloads)
-        completed = sum(
-            1 for d in self.downloads.values()
-            if d.status == DownloadStatus.COMPLETED
-        )
-        failed = sum(
-            1 for d in self.downloads.values()
-            if d.status == DownloadStatus.FAILED
-        )
+        completed = sum(1 for d in self.downloads.values() if d.status == DownloadStatus.COMPLETED)
+        failed = sum(1 for d in self.downloads.values() if d.status == DownloadStatus.FAILED)
 
         # Calculate total throughput
         import time
+
         if self._start_time is not None:
             elapsed = time.time() - self._start_time
             if elapsed > 0:
@@ -380,14 +529,11 @@ class ProgressDisplay:
         table.add_row("Total Downloads", str(total_downloads))
         table.add_row("Completed", f"[green]{completed}[/green]")
         table.add_row("Failed", f"[red]{failed}[/red]")
-        table.add_row(
-            "Total Downloaded",
-            f"{self._total_bytes_downloaded / (1024 * 1024):.2f} MiB"
-        )
+        table.add_row("Total Downloaded", f"{self._total_bytes_downloaded / (1024 * 1024):.2f} MiB")
         table.add_row("Average Throughput", f"{throughput_mbps:.2f} MiB/s")
 
         self.console.print(table)
-        
+
         # Display errors for failed downloads
         failed_downloads = [d for d in self.downloads.values() if d.status == DownloadStatus.FAILED]
         if failed_downloads:
@@ -428,7 +574,7 @@ class ProgressDisplay:
             True if terminal width is less than 80 columns, False otherwise
         """
         width = self.get_terminal_width()
-        return width < 80
+        return width < _NARROW_TERMINAL_WIDTH
 
     def calculate_bar_width(self) -> int:
         """
@@ -445,11 +591,11 @@ class ProgressDisplay:
             Progress bar width in characters
         """
         terminal_width = self.get_terminal_width()
-        
-        if terminal_width >= 80:
+
+        if terminal_width >= _NARROW_TERMINAL_WIDTH:
             # Wide terminal: use 40-60 char bar
             # Scale proportionally: 80 cols -> 40 chars, 160+ cols -> 60 chars
-            bar_width = 40 + int((terminal_width - 80) * 0.25)
+            bar_width = 40 + int((terminal_width - _NARROW_TERMINAL_WIDTH) * 0.25)
             return min(bar_width, 60)
         else:
             # Narrow terminal: use 10-20 char bar proportional to width
@@ -597,17 +743,17 @@ class ProgressDisplay:
 
         # Truncate with ellipsis
         ellipsis = "..."
-        
+
         # Calculate space available for the URL portion
         # We want to preserve the beginning of the URL (protocol + domain)
         available_length = max_width - len(ellipsis)
-        
+
         # Ensure we have at least some characters for the URL
         if available_length < 1:
             # If max_width is too small, just truncate from the end
             return url[:max_width]
-        
+
         # Extract the beginning portion and add ellipsis
         truncated = url[:available_length] + ellipsis
-        
+
         return truncated
